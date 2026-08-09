@@ -1,0 +1,56 @@
+{
+  "calendar": {
+    "label": "Google Calendar",
+    "package_candidates": [
+      "com.google.android.calendar"
+    ],
+    "launch": {
+      "mode": "intent",
+      "args": [
+        "am",
+        "start",
+        "-a",
+        "android.intent.action.INSERT",
+        "-t",
+        "vnd.android.cursor.item/event",
+        "--es",
+        "title",
+        "Agent IPC MVP Meeting",
+        "--el",
+        "beginTime",
+        "1784304000000",
+        "--el",
+        "endTime",
+        "1784307600000"
+      ]
+    }
+  },
+  "clock": {
+    "label": "System Clock",
+    "package_candidates": [
+      "com.google.android.deskclock",
+      "com.android.deskclock"
+    ],
+    "launch": {
+      "mode": "intent",
+      "args": [
+        "am",
+        "start",
+        "-a",
+        "android.intent.action.SET_ALARM",
+        "--ei",
+        "android.intent.extra.alarm.HOUR",
+        "9",
+        "--ei",
+        "android.intent.extra.alarm.MINUTES",
+        "30",
+        "--es",
+        "android.intent.extra.alarm.MESSAGE",
+        "Agent IPC MVP Meeting",
+        "--ez",
+        "android.intent.extra.alarm.SKIP_UI",
+        "false"
+      ]
+    }
+  }
+}
