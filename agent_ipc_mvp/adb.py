@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -44,10 +45,11 @@ class AdbClient:
         proc = self.run("devices", "-l", check=True)
         devices = []
         for line in proc.stdout.splitlines()[1:]:
-            if "\tdevice" in line:
-                devices.append(line.split()[0])
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                devices.append(parts[0])
         if not devices:
-            raise AdbError("no online Android device/emulator found via adb")
+            raise AdbError(f"no online Android device/emulator found via adb\nadb output:\n{proc.stdout}{proc.stderr}")
         if self.device and self.device not in devices:
             raise AdbError(f"ANDROID_SERIAL={self.device} is not online; online devices: {devices}")
         return self.device or devices[0]
@@ -55,6 +57,18 @@ class AdbClient:
     def package_exists(self, package_name: str) -> bool:
         proc = self.shell("cmd", "package", "path", package_name, timeout=15)
         return proc.returncode == 0 and "package:" in proc.stdout
+
+    def foreground_package(self) -> str | None:
+        proc = self.shell("dumpsys", "window", timeout=20)
+        text = proc.stdout + proc.stderr
+        for pattern in [
+            r"mCurrentFocus=Window\{[^ ]+\s+u\d+\s+([^/ ]+)/",
+            r"mFocusedApp=ActivityRecord\{[^ ]+\s+u\d+\s+([^/ ]+)/",
+        ]:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        return None
 
     def pick_package(self, candidates: list[str]) -> str:
         for package_name in candidates:
@@ -74,8 +88,12 @@ class AdbClient:
             timeout=30,
         )
 
+    def force_stop(self, package_name: str) -> subprocess.CompletedProcess[str]:
+        return self.shell("am", "force-stop", package_name, timeout=20)
+
     def launch_shell(self, args: list[str]) -> subprocess.CompletedProcess[str]:
-        return self.shell(*args, check=True, timeout=30)
+        command = " ".join(shlex.quote(arg) for arg in args)
+        return self.shell(command, check=True, timeout=30)
 
     def dump_ui(self, out_path: Path) -> Path:
         out_path.parent.mkdir(parents=True, exist_ok=True)

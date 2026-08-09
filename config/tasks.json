@@ -1,0 +1,53 @@
+{
+  "calendar_clock": {
+    "goal": "Create a Calendar event and confirm the matching Clock alarm.",
+    "edges": [
+      ["calendar", "clock"]
+    ],
+    "subtasks": [
+      {
+        "agent_name": "calendar",
+        "instruction": "Complete a calendar event named 'Agent IPC MVP Meeting'. If the event draft is open and Save is visible, tap Save. Finish only after the saved event is visible outside the edit sheet.",
+        "required_terms": ["Agent IPC MVP Meeting"],
+        "forbidden_terms": ["Save"],
+        "launch_args": [
+          "--es", "title", "Agent IPC MVP Meeting",
+          "--el", "beginTime", "1784304000000",
+          "--el", "endTime", "1784307600000"
+        ]
+      },
+      {
+        "agent_name": "clock",
+        "instruction": "Complete an alarm for 09:30 with label 'Agent IPC MVP Meeting'. If the alarm already exists and is visible, finish.",
+        "required_terms": ["Agent IPC MVP Meeting", "9:30"],
+        "launch_args": [
+          "--ei", "android.intent.extra.alarm.HOUR", "9",
+          "--ei", "android.intent.extra.alarm.MINUTES", "30",
+          "--es", "android.intent.extra.alarm.MESSAGE", "Agent IPC MVP Meeting",
+          "--ez", "android.intent.extra.alarm.SKIP_UI", "false"
+        ]
+      }
+    ]
+  },
+  "calendar_keep_info": {
+    "goal": "Create a Calendar event using information retrieved from a notebook app at runtime.",
+    "edges": [
+      ["calendar", "keep"],
+      ["keep", "calendar"]
+    ],
+    "subtasks": [
+      {
+        "agent_name": "calendar",
+        "instruction": "Complete a calendar event named 'Agent IPC MVP Meeting'. Before saving, request any needed event information from a suitable app agent using REQUEST_INFORMATION. After receiving the information, decide how to use it in Calendar, assign any needed semantic slot with SET_SLOT, then save. Finish only after the saved event is visible outside the edit sheet.",
+        "max_steps": 10,
+        "required_terms": ["Agent IPC MVP Meeting", "Googleplex"],
+        "forbidden_terms": ["Save"],
+        "launch_args": [
+          "--es", "title", "Agent IPC MVP Meeting",
+          "--el", "beginTime", "1784304000000",
+          "--el", "endTime", "1784307600000"
+        ]
+      }
+    ]
+  }
+}

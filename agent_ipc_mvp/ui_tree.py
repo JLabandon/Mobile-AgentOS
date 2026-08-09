@@ -101,7 +101,7 @@ def visible_texts(nodes: list[UiNode], limit: int = 80) -> list[str]:
     return values
 
 
-def prompt_snapshot(nodes: list[UiNode], limit: int = 70) -> str:
+def prompt_snapshot(nodes: list[UiNode], limit: int = 100) -> str:
     compact = [node.to_prompt_dict() for node in nodes[:limit]]
     return "\n".join(str(item) for item in compact)
 

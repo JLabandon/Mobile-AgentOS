@@ -4,7 +4,16 @@ from dataclasses import dataclass
 from typing import Any
 
 
-ALLOWED_ACTIONS = {"click", "input", "swipe", "back", "FINISH"}
+ALLOWED_ACTIONS = {
+    "click",
+    "input",
+    "swipe",
+    "back",
+    "REQUEST_INFORMATION",
+    "RESPOND_INFORMATION",
+    "SET_SLOT",
+    "FINISH",
+}
 
 
 class ActionError(ValueError):
@@ -19,6 +28,17 @@ class AgentAction:
     text: str | None = None
     direction: str | None = None
     reason: str = ""
+    to_agent: str | None = None
+    need: str | None = None
+    context: str | None = None
+    purpose: str | None = None
+    resume_instruction: str | None = None
+    slot: str | None = None
+    status: str | None = None
+    information: str | None = None
+    evidence: str | None = None
+    confidence: str | None = None
+    limitations: str | None = None
 
     @classmethod
     def from_json(cls, obj: dict[str, Any]) -> "AgentAction":
@@ -36,6 +56,21 @@ class AgentAction:
             raise ActionError("swipe requires direction: up/down/left/right")
         if action == "input" and not obj.get("text"):
             raise ActionError("input requires text")
+        if action == "REQUEST_INFORMATION":
+            for key in ["to_agent", "need", "context", "purpose", "resume_instruction"]:
+                if not obj.get(key):
+                    raise ActionError(f"REQUEST_INFORMATION requires {key}")
+        if action == "RESPOND_INFORMATION":
+            status = str(obj.get("status", "")).strip()
+            if status not in {"success", "failed"}:
+                raise ActionError("RESPOND_INFORMATION requires status: success|failed")
+            if status == "success" and not obj.get("information"):
+                raise ActionError("successful RESPOND_INFORMATION requires information")
+        if action == "SET_SLOT":
+            if not obj.get("slot"):
+                raise ActionError("SET_SLOT requires slot")
+            if not obj.get("text"):
+                raise ActionError("SET_SLOT requires text")
         if action in {"click", "input"} and target_id is None and not obj.get("target_text"):
             if action == "input":
                 # Input may target the first editable field as a fallback.
@@ -49,6 +84,17 @@ class AgentAction:
             text=str(obj.get("text", "")).strip() or None,
             direction=str(direction).strip() if direction else None,
             reason=str(obj.get("reason", "")).strip(),
+            to_agent=str(obj.get("to_agent", "")).strip() or None,
+            need=str(obj.get("need", "")).strip() or None,
+            context=str(obj.get("context", "")).strip() or None,
+            purpose=str(obj.get("purpose", "")).strip() or None,
+            resume_instruction=str(obj.get("resume_instruction", "")).strip() or None,
+            slot=str(obj.get("slot", "")).strip() or None,
+            status=str(obj.get("status", "")).strip() or None,
+            information=str(obj.get("information", "")).strip() or None,
+            evidence=str(obj.get("evidence", "")).strip() or None,
+            confidence=str(obj.get("confidence", "")).strip() or None,
+            limitations=str(obj.get("limitations", "")).strip() or None,
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -59,4 +105,15 @@ class AgentAction:
             "text": self.text,
             "direction": self.direction,
             "reason": self.reason,
+            "to_agent": self.to_agent,
+            "need": self.need,
+            "context": self.context,
+            "purpose": self.purpose,
+            "resume_instruction": self.resume_instruction,
+            "slot": self.slot,
+            "status": self.status,
+            "information": self.information,
+            "evidence": self.evidence,
+            "confidence": self.confidence,
+            "limitations": self.limitations,
         }

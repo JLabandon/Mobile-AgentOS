@@ -37,7 +37,7 @@ class DeepSeekClient:
         self.config = config or LlmConfig.from_env()
         self.client = OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
 
-    def json_chat(self, *, system: str, user: str, max_tokens: int = 600) -> dict[str, Any]:
+    def raw_chat(self, *, system: str, user: str, max_tokens: int = 600) -> str:
         response = self.client.chat.completions.create(
             model=self.config.model,
             messages=[
@@ -47,12 +47,19 @@ class DeepSeekClient:
             response_format={"type": "json_object"},
             temperature=0,
             max_tokens=max_tokens,
+            extra_body={"thinking": {"type": "disabled"}},
         )
-        content = response.choices[0].message.content or ""
+        return response.choices[0].message.content or ""
+
+    def parse_json_content(self, content: str) -> dict[str, Any]:
         try:
             return json.loads(content)
         except json.JSONDecodeError as exc:
             raise LlmError(f"model did not return valid JSON: {content}") from exc
+
+    def json_chat(self, *, system: str, user: str, max_tokens: int = 600) -> dict[str, Any]:
+        content = self.raw_chat(system=system, user=user, max_tokens=max_tokens)
+        return self.parse_json_content(content)
 
     def smoke_test(self) -> dict[str, Any]:
         return self.json_chat(
