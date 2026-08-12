@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, is_dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+import time
+
+
+def json_default(value: Any) -> Any:
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, Path):
+        return str(value)
+    return str(value)
+
+
+class RunReporter:
+    def __init__(self, run_dir: Path) -> None:
+        self.run_dir = run_dir
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.trace_path = self.run_dir / "trace.jsonl"
+        self.ipc_ledger_path = self.run_dir / "ipc_ledger.jsonl"
+        self.state_timeline_path = self.run_dir / "state_timeline.jsonl"
+        self.metrics_path = self.run_dir / "metrics.json"
+        self.events: list[dict[str, Any]] = []
+        self.ipc_events: list[dict[str, Any]] = []
+        self.state_events: list[dict[str, Any]] = []
+        self.started_monotonic = time.monotonic()
+
+    def event(self, kind: str, **payload: Any) -> None:
+        item = {
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "kind": kind,
+            **payload,
+        }
+        self.events.append(item)
+        with self.trace_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(item, ensure_ascii=False, default=json_default) + "\n")
+
+    def state_event(self, agent: str, state: str, **payload: Any) -> None:
+        item = {
+            "time": datetime.now().isoformat(timespec="milliseconds"),
+            "t": round(time.monotonic() - self.started_monotonic, 3),
+            "agent": agent,
+            "state": state,
+            **payload,
+        }
+        self.state_events.append(item)
+        with self.state_timeline_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(item, ensure_ascii=False, default=json_default) + "\n")
+
+    def ipc_event(
+        self,
+        *,
+        request_id: str,
+        message_kind: str,
+        status: str,
+        from_agent: str,
+        to_agent: str,
+        mode: str = "",
+        via: str = "",
+        request_summary: str = "",
+        response_summary: str = "",
+        evidence: str = "",
+        evidence_ref: str = "",
+        policy_decision: str = "not_checked",
+        payload_ref: str = "",
+        steward_visible: bool = True,
+        user_visible: bool = True,
+    ) -> None:
+        item = {
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "request_id": request_id,
+            "message_kind": message_kind,
+            "status": status,
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "mode": mode,
+            "via": via,
+            "request_summary": request_summary,
+            "response_summary": response_summary,
+            "evidence": evidence,
+            "evidence_ref": evidence_ref,
+            "policy_decision": policy_decision,
+            "payload_ref": payload_ref,
+            "steward_visible": steward_visible,
+            "user_visible": user_visible,
+        }
+        self.ipc_events.append(item)
+        with self.ipc_ledger_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(item, ensure_ascii=False, default=json_default) + "\n")
+
+    def query_ipc_ledger(self, *, request_id: str | None = None, agent: str | None = None) -> list[dict[str, Any]]:
+        events = self.ipc_events
+        if request_id:
+            events = [event for event in events if event.get("request_id") == request_id]
+        if agent:
+            events = [event for event in events if agent in {event.get("from_agent"), event.get("to_agent")}]
+        return events
+
+    def metrics(self, *, task: str, runtime: str, success: bool, run_error: str | None = None) -> dict[str, Any]:
+        elapsed = round(time.monotonic() - self.started_monotonic, 3)
+        model_calls = sum(1 for event in self.events if event.get("kind") == "model_call")
+        adb_actions = sum(
+            1
+            for event in self.events
+            if event.get("kind") == "agent_step" and event.get("status") not in {"finished", "waiting", "responded"}
+        )
+        steward_turns = sum(1 for event in self.events if event.get("kind") in {"steward_plan", "runtime_request_routed", "runtime_response_delivered"} and event.get("via", "steward") == "steward")
+        ipc_messages = len(self.ipc_events)
+        app_switches = sum(1 for event in self.events if event.get("kind") == "app_launch")
+        wait_peer_time = 0.0
+        wait_started: dict[str, float] = {}
+        for event in self.state_events:
+            agent = str(event.get("agent"))
+            state = event.get("state")
+            t_value = float(event.get("t", 0.0))
+            if state == "WAIT_PEER":
+                wait_started[agent] = t_value
+            elif agent in wait_started and state in {"READY", "RUNNING", "DONE", "FAILED"}:
+                wait_peer_time += max(0.0, t_value - wait_started.pop(agent))
+        metrics = {
+            "task": task,
+            "runtime": runtime,
+            "success": success,
+            "wall_clock_time": elapsed,
+            "llm_calls": model_calls,
+            "adb_ui_actions": adb_actions,
+            "steward_turns": steward_turns,
+            "ipc_messages": ipc_messages,
+            "wait_peer_time": round(wait_peer_time, 3),
+            "app_switches": app_switches,
+            "total_runtime_events": len(self.events) + len(self.state_events) + len(self.ipc_events),
+            "run_error": run_error,
+            "run_dir": str(self.run_dir),
+        }
+        self.metrics_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return metrics
+
+    def write_summary(self, *, task: str, success: bool, runtime: str = "", run_error: str | None = None) -> Path:
+        metrics = self.metrics(task=task, runtime=runtime, success=success, run_error=run_error)
+        lines = [
+            "# Mobile AgentOS Run Summary",
+            "",
+            f"- Task: `{task}`",
+            f"- Runtime: `{runtime}`",
+            f"- Success: `{success}`",
+            f"- Run directory: `{self.run_dir}`",
+        ]
+        if run_error:
+            lines.append(f"- Error: `{run_error}`")
+        lines.extend(
+            [
+                f"- Trace: `{self.trace_path}`",
+                f"- IPC ledger: `{self.ipc_ledger_path}`",
+                f"- State timeline: `{self.state_timeline_path}`",
+                f"- Metrics: `{self.metrics_path}`",
+            ]
+        )
+        lines.extend(["", "## Trace", ""])
+        for event in self.events:
+            kind = event.get("kind")
+            if kind == "agent_step":
+                lines.append(
+                    f"- `{event.get('agent')}` step `{event.get('step')}`: "
+                    f"action `{event.get('action')}`, status `{event.get('status')}`"
+                )
+                if event.get("reason"):
+                    lines.append(f"  - Reason: {event.get('reason')}")
+                if event.get("screenshot"):
+                    lines.append(f"  - Screenshot: `{event.get('screenshot')}`")
+            elif kind in {"agent_start", "agent_finish", "steward_plan", "environment"}:
+                lines.append(f"- `{kind}`: {event.get('message', event)}")
+            elif kind == "app_launch":
+                lines.append(
+                    f"- `app_launch`: `{event.get('agent')}` expected `{event.get('expected')}`, "
+                    f"foreground `{event.get('foreground')}`, matched `{event.get('matched')}`"
+                )
+            elif kind == "agent_registry":
+                lines.append(f"- `agent_registry`: {len(event.get('registry', []))} agents")
+            elif kind in {
+                "task_plan_created",
+                "runtime_request_created",
+                "runtime_request_routed",
+                "runtime_request_received",
+                "runtime_response_created",
+                "runtime_response_delivered",
+                "agent_paused",
+                "agent_resumed",
+            }:
+                lines.append(f"- `{kind}`: {event}")
+            elif kind == "completion_check":
+                lines.append(
+                    f"- `completion_check`: `{event.get('agent')}` step `{event.get('step')}` "
+                    f"verified `{event.get('verified')}`: {event.get('message')}"
+                )
+            elif kind == "model_call":
+                lines.append(
+                    f"- `model_call`: `{event.get('agent')}` step `{event.get('step')}` "
+                    f"attempt `{event.get('attempt')}`"
+                )
+                lines.append(f"  - Prompt: `{event.get('prompt')}`")
+                lines.append(f"  - Response: `{event.get('response')}`")
+                if event.get("raw_response") == "":
+                    lines.append("  - Raw response: `<empty>`")
+            elif kind == "model_retry":
+                lines.append(
+                    f"- `model_retry`: `{event.get('agent')}` step `{event.get('step')}` "
+                    f"attempt `{event.get('attempt')}`: {event.get('message')}"
+                )
+                if event.get("prompt"):
+                    lines.append(f"  - Prompt: `{event.get('prompt')}`")
+            elif kind == "error":
+                lines.append(f"- `error`: {event.get('message')}")
+        lines.extend(["", "## Metrics", ""])
+        for key in [
+            "wall_clock_time",
+            "llm_calls",
+            "adb_ui_actions",
+            "steward_turns",
+            "ipc_messages",
+            "wait_peer_time",
+            "app_switches",
+            "total_runtime_events",
+        ]:
+            lines.append(f"- {key}: `{metrics[key]}`")
+        summary_path = self.run_dir / "summary.md"
+        summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return summary_path

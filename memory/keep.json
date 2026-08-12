@@ -1,0 +1,7 @@
+{
+  "lessons": [
+    "When doing 'Search the user's notes for the wake-up time for the flight. Report the time exactly as written in the note.', do not finish until completion check passes: missing required terms: ['wake up time']",
+    "When doing 'Search the user's notes for the wake-up time for the flight. Report the time exactly as written in the note.', avoid repeating ineffective actions; max steps were reached.",
+    "Action failed in Google Keep: name 'AgentRunResult' is not defined"
+  ]
+}

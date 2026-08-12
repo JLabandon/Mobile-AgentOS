@@ -1,0 +1,7 @@
+{
+  "lessons": [
+    "For Google Clock time selection, prefer the visible text-input mode control when available; enter hour/minute text directly, choose AM or PM from visible options, then tap OK once the requested time is visible.",
+    "For Google Clock alarm labels, when a Label dialog is visible, input the requested label into the editable Label field and tap OK after the label text is visible.",
+    "Do not repeat a primitive action that already changed the Clock UI; observe the updated dialog and either fill the next missing value or confirm with OK."
+  ]
+}
