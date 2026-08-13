@@ -4,6 +4,12 @@ Mobile AgentOS is a prototype runtime for coordinating multiple app-oriented age
 
 The project studies a mobile operating-system layer for agents. A Steward agent plans work, app agents operate real apps through Android UI, and the runtime records scheduling, inter-agent communication, app switches, and benchmark evidence.
 
+## Repository Branches
+
+- `main`: Mobile AgentOS with the project files at the repository root.
+- `mobile-agentos-main`: mirror branch for the Mobile AgentOS root project.
+- `agent-ipc`: preserved Agent IPC prototype branch.
+
 ## Project Goals
 
 - Run multiple app-bound agents on one Android emulator.
@@ -68,7 +74,7 @@ export DEEPSEEK_API_KEY="..."
 export DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
-The helper script loads `.env` from the repository root.
+The helper script loads `.env` from the repository root when the file exists.
 
 ## Run
 

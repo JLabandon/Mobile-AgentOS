@@ -14,10 +14,6 @@ if [ -f ".env" ]; then
   set -a
   source .env
   set +a
-elif [ -f "../agent_ipc_mvp/.env" ]; then
-  set -a
-  source ../agent_ipc_mvp/.env
-  set +a
 fi
 
 if [ -z "${ADB:-}" ] && [ -x "$HOME/Library/Android/sdk/platform-tools/adb" ]; then
