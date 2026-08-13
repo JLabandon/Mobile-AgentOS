@@ -1,0 +1,8 @@
+.env
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+runs/
+memory/
+benchmarks/fixtures/mock_apps/build/

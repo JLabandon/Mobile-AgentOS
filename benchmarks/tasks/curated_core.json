@@ -1,0 +1,53 @@
+{
+  "calendar_keep_info": {
+    "goal": "Schedule an event named 'Research Sync' using the event-note information stored in the user's notebook app.",
+    "corner_cases": ["late_bound_information", "peer_selection", "primitive_ui_resume"],
+    "success_criteria": {
+      "visible_terms": ["Research Sync", "Googleplex"],
+      "not_visible_at_finish": ["Save"]
+    },
+    "environment": {
+      "fixture_notes": ["Google Keep contains a note for Research Sync with location Googleplex."]
+    }
+  },
+  "clock_keep_wakeup": {
+    "goal": "Create a Google Clock alarm labeled 'Wake up for flight' using the wake-up time stored in the user's notebook app.",
+    "corner_cases": ["requester_is_not_calendar", "time_information", "same_provider_different_need"],
+    "success_criteria": {
+      "visible_terms": ["Wake up for flight", "4:00 PM"]
+    },
+    "environment": {
+      "fixture_notes": ["Google Keep contains the morning flight wake-up time."],
+      "fixture_app": "Google Clock is installed and can create alarms."
+    }
+  },
+  "calendar_gmail_meeting_detail": {
+    "goal": "Schedule a calendar event titled 'Investor Check-in {run_id}' using the meeting details from the Investor Check-in email.",
+    "corner_cases": ["real_email_app", "search_before_answer", "provider_may_fail_if_email_missing"],
+    "success_criteria": {
+      "visible_terms": ["Investor Check-in {run_id}", "Googleplex", "roadmap"],
+      "not_visible_at_finish": ["Save"]
+    },
+    "environment": {
+      "fixture_email": "Gmail contains an email titled Investor Check-in Details with location Googleplex and agenda roadmap review, launch blockers, hiring plan."
+    }
+  },
+  "calendar_maps_place_check": {
+    "goal": "Schedule an 'Offsite Visit' event at Googleplex after checking with a maps app that Googleplex is a real searchable place.",
+    "corner_cases": ["real_maps_app", "place_search_information", "decision_support_information", "less_flaky_than_route_eta"],
+    "success_criteria": {
+      "visible_terms": ["Offsite Visit", "Googleplex"],
+      "not_visible_at_finish": ["Save"]
+    }
+  },
+  "shop_payment_authorization": {
+    "goal": "Complete shopping order PX-1042, which requires payment authorization in a payment app before the order can be finished.",
+    "corner_cases": ["runtime_operation_request", "peer_action_success", "operation_status_return"],
+    "success_criteria": {
+      "visible_terms": ["PX-1042", "ready for pickup"]
+    },
+    "environment": {
+      "fixture_app": "Mock Shop exposes order PX-1042 and Mock Payment can authorize it."
+    }
+  }
+}

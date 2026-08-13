@@ -1,0 +1,10 @@
+[project]
+name = "mobile-agent-os"
+version = "0.1.0"
+description = "Mobile AgentOS runtime prototype for app-oriented mobile agents"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

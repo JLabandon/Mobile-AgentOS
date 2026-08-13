@@ -1,0 +1,91 @@
+{
+  "calendar": {
+    "label": "Google Calendar",
+    "description": "Calendar and scheduling app. It can create, edit, and inspect calendar events, including title, time, location, and description.",
+    "package_candidates": ["com.google.android.calendar"],
+    "capabilities": ["create_calendar_event", "edit_calendar_event", "read_calendar_event"],
+    "task_guidelines": [
+      "For creating an event, open the event insert screen, ensure required information is present, then save only after the relevant fields are filled.",
+      "If an event requires information that is not available in Calendar, request it from an appropriate app-oriented agent before saving.",
+      "When runtime information is received, decide how it should be used in Calendar and manipulate the visible UI with primitive actions.",
+      "Location fields should contain places or addresses. Agenda, notes, and other meeting details should be preserved in a description, notes, or details field when such a field is available.",
+      "If a needed event field is not visible in the current viewport, scroll through the event form before reopening fields that are already filled."
+    ],
+    "launch": {
+      "mode": "intent",
+      "args": ["am", "start", "-a", "android.intent.action.INSERT", "-t", "vnd.android.cursor.item/event"]
+    }
+  },
+  "clock": {
+    "label": "Google Clock",
+    "description": "Official Clock app. It can create and inspect alarms, including time and label. Some versions show a graphical time picker, but usually also expose a keyboard or manual-input mode.",
+    "package_candidates": ["com.google.android.deskclock", "com.android.deskclock"],
+    "capabilities": ["create_alarm", "read_alarm"],
+    "task_guidelines": [
+      "For alarm tasks, inspect whether the requested alarm already exists before creating a duplicate.",
+      "If the time picker is graphical, look for keyboard, text-input, or edit controls to enter the time manually.",
+      "If manual input is unavailable, use primitive clicks on visible time picker controls and learn from failed attempts through long-term memory.",
+      "Set the requested label when a label field or add-label control is visible, then save only after the requested time and label are visible."
+    ],
+    "launch": {"mode": "intent", "args": ["am", "start", "-a", "android.intent.action.SET_ALARM"]}
+  },
+  "keep": {
+    "label": "Google Keep",
+    "package_candidates": ["com.google.android.keep"],
+    "capabilities": ["retrieve_information", "search_notes", "read_notes", "store_notes"],
+    "description": "Notebook and note-taking app. It can store, search, and read user notes. It should answer runtime information requests only with information supported by visible notes or its app memory.",
+    "task_guidelines": [
+      "When answering an information request, search or inspect notes related to the request context.",
+      "Return concise information with evidence from visible note text. Do not decide how the requesting app should use the information.",
+      "If the needed information is not visible or cannot be supported by a note, respond with failed status rather than inventing an answer."
+    ],
+    "launch": {"mode": "launcher"}
+  },
+  "maps": {
+    "label": "Google Maps",
+    "package_candidates": ["com.google.android.apps.maps"],
+    "capabilities": ["search_place", "estimate_route", "inspect_travel_time", "retrieve_place_information"],
+    "description": "Map and navigation app. It can search real places and inspect route or travel-time information shown on screen.",
+    "task_guidelines": [
+      "Use visible place, route, distance, and travel-time information as evidence.",
+      "For route feasibility questions, answer with the visible travel time and whether it satisfies the requester context.",
+      "Do not invent travel-time information if no route result is visible."
+    ],
+    "launch": {"mode": "launcher"}
+  },
+  "gmail": {
+    "label": "Gmail",
+    "package_candidates": ["com.google.android.gm"],
+    "capabilities": ["search_email", "read_email", "retrieve_information"],
+    "description": "Email app. It can search and read email content such as meeting details, booking confirmations, deadlines, addresses, and contacts.",
+    "task_guidelines": [
+      "When answering a request, search or inspect visible emails related to the request.",
+      "Return only information supported by visible email subject/body text.",
+      "If the needed email is unavailable, respond with failed status and evidence of the searched UI."
+    ],
+    "launch": {"mode": "launcher"}
+  },
+  "shop": {
+    "label": "Mock Shop",
+    "package_candidates": ["edu.agentos.mockshop"],
+    "capabilities": ["inspect_order", "request_payment", "continue_after_payment"],
+    "description": "Controlled shopping app. It contains an order that cannot complete until a payment-oriented peer returns an operation result.",
+    "task_guidelines": [
+      "If payment is required, issue REQUEST_OPERATION to a payment-capable app agent.",
+      "Continue only after a payment operation response is available.",
+      "In this controlled app, a completed order should show the status text 'ready for pickup'."
+    ],
+    "launch": {"mode": "launcher"}
+  },
+  "payment": {
+    "label": "Mock Payment",
+    "package_candidates": ["edu.agentos.mockpayment"],
+    "capabilities": ["authorize_payment", "decline_payment", "inspect_payment_status"],
+    "description": "Controlled payment app. It can approve or decline a visible payment request and expose the resulting status.",
+    "task_guidelines": [
+      "For operation requests, use the visible payment request and controls to produce RESPOND_OPERATION.",
+      "Return success only when the approved status is visible; return failed when declined or unavailable."
+    ],
+    "launch": {"mode": "launcher"}
+  }
+}
