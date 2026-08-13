@@ -71,6 +71,10 @@ class MultidisplaySplitPhaseRuntime:
         self._snapshot_by_agent: dict[str, ObservationSnapshot] = {}
         self._pending_action_by_agent: dict[str, PendingAction] = {}
         self._delivered_edges: set[tuple[str, str]] = set()
+        self._last_scheduler_signature: tuple[object, ...] | None = None
+        self._last_scheduler_trace_at = 0.0
+        self._last_idle_signature: tuple[object, ...] | None = None
+        self._last_idle_trace_at = 0.0
 
     def run(self, task: str, run_dir: Path) -> bool:
         if task not in self.task_plans:
@@ -119,16 +123,11 @@ class MultidisplaySplitPhaseRuntime:
                 if progressed:
                     continue
 
-                if self._start_one_observe_and_think(active, finished):
+                if self._start_one_observe_and_think(active, finished, plan):
                     continue
 
                 if self._future_by_agent:
-                    self.reporter.event(
-                        "scheduler_idle",
-                        runtime=self.name,
-                        reason="waiting_for_llm_decision",
-                        pending_agents=sorted(self._future_by_agent),
-                    )
+                    self._trace_scheduler_idle("waiting_for_llm_decision", sorted(self._future_by_agent))
                     time.sleep(0.01)
                     continue
 
@@ -150,10 +149,13 @@ class MultidisplaySplitPhaseRuntime:
         planner = StewardAgent(cast(object, self.agents), self.reporter, self.task_plans, mode=self.name)
         return planner.plan(task)
 
-    def _start_one_observe_and_think(self, active: dict[str, SubTask], finished: set[str]) -> bool:
+    def _start_one_observe_and_think(self, active: dict[str, SubTask], finished: set[str], plan: TaskPlan) -> bool:
+        shared_foreground = self._shared_foreground_observation()
+        if shared_foreground and (self._future_by_agent or self._pending_action_by_agent):
+            return False
         candidates = [
             name
-            for name in sorted(active)
+            for name in self._ordered_candidates(active, finished, plan, shared_foreground=shared_foreground)
             if f"{name}_agent" not in finished
             and self._states.get(f"{name}_agent") == "READY"
             and f"{name}_agent" not in self._future_by_agent
@@ -206,6 +208,27 @@ class MultidisplaySplitPhaseRuntime:
             display_id=slot.display_id,
         )
         return True
+
+    def _ordered_candidates(
+        self,
+        active: dict[str, SubTask],
+        finished: set[str],
+        plan: TaskPlan,
+        *,
+        shared_foreground: bool,
+    ) -> list[str]:
+        order = {subtask.agent_name: index for index, subtask in enumerate(plan.subtasks)}
+        names = sorted(active, key=lambda name: order.get(name, len(order)))
+        if not shared_foreground:
+            return names
+        blocked_targets = {
+            target
+            for source, target in plan.edges
+            if f"{source}_agent" not in finished
+        }
+        unblocked = [name for name in names if name not in blocked_targets]
+        blocked = [name for name in names if name in blocked_targets]
+        return unblocked + blocked
 
     def _collect_completed_decisions(self) -> set[str]:
         failed_agents: set[str] = set()
@@ -399,18 +422,57 @@ class MultidisplaySplitPhaseRuntime:
             resources.append("ime")
         return resources
 
+    def _shared_foreground_observation(self) -> bool:
+        slots = self.display_manager.list_slots()
+        if not slots:
+            return False
+        display_ids = {slot.display_id for slot in slots}
+        foreground_slots = [slot for slot in slots if slot.observation_channel == "foreground_uiautomator"]
+        return len(display_ids) == 1 and len(foreground_slots) > 1
+
     def _set_state(self, agent: str, state: str, **payload: object) -> None:
         self._states[agent] = state
         self.reporter.state_event(agent, state, runtime=self.name, **payload)
 
     def _trace_scheduler_tick(self, tick: int) -> None:
+        states = dict(sorted(self._states.items()))
+        pending_decisions = sorted(self._future_by_agent)
+        ready_actions = sorted(self._pending_action_by_agent)
+        resources = self.resources.snapshot()
+        displays = [slot.__dict__ for slot in self.display_manager.list_slots()]
+        signature = (
+            tuple(states.items()),
+            tuple(pending_decisions),
+            tuple(ready_actions),
+            tuple(sorted((name, len(leases)) for name, leases in resources.items())),
+            tuple((slot["display_id"], slot["owner_agent"], slot["status"]) for slot in displays),
+        )
+        now = time.monotonic()
+        if signature == self._last_scheduler_signature and now - self._last_scheduler_trace_at < 1.0:
+            return
+        self._last_scheduler_signature = signature
+        self._last_scheduler_trace_at = now
         self.reporter.event(
             "scheduler_tick",
             runtime=self.name,
             tick=tick,
-            states=dict(sorted(self._states.items())),
-            pending_decisions=sorted(self._future_by_agent),
-            ready_actions=sorted(self._pending_action_by_agent),
-            resources=self.resources.snapshot(),
-            displays=[slot.__dict__ for slot in self.display_manager.list_slots()],
+            states=states,
+            pending_decisions=pending_decisions,
+            ready_actions=ready_actions,
+            resources=resources,
+            displays=displays,
+        )
+
+    def _trace_scheduler_idle(self, reason: str, pending_agents: list[str]) -> None:
+        signature = (reason, tuple(pending_agents))
+        now = time.monotonic()
+        if signature == self._last_idle_signature and now - self._last_idle_trace_at < 1.0:
+            return
+        self._last_idle_signature = signature
+        self._last_idle_trace_at = now
+        self.reporter.event(
+            "scheduler_idle",
+            runtime=self.name,
+            reason=reason,
+            pending_agents=pending_agents,
         )

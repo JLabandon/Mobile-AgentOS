@@ -32,6 +32,9 @@ class DisplayBackedAgent(Protocol):
     def display_package(self) -> str:
         ...
 
+    def activate_display_session(self, display_id: int) -> None:
+        ...
+
     def observe_display(self, display_id: int) -> ObservationSnapshot:
         ...
 
@@ -66,6 +69,7 @@ class DisplayManager:
 
     def observe(self, agent: DisplayBackedAgent) -> ObservationSnapshot:
         slot = self.slot_for_agent(agent.name)
+        agent.activate_display_session(slot.display_id)
         return agent.observe_display(slot.display_id)
 
     def input(self, agent: DisplayBackedAgent, action: AgentAction) -> ActionResult:
@@ -96,7 +100,7 @@ class AndroidDisplayManager(DisplayManager):
 
     def observe(self, agent: DisplayBackedAgent) -> ObservationSnapshot:
         slot = self.slot_for_agent(agent.name)
-        self.adb.launch_package_on_display(agent.display_package(), slot.display_id)
+        agent.activate_display_session(slot.display_id)
         return agent.observe_display(slot.display_id)
 
 
@@ -142,9 +146,9 @@ class ForegroundObservationDisplayManager(DisplayManager):
         return [self.slot_for_agent(agent) for agent in sorted(self._packages_by_agent)]
 
     def observe(self, agent: DisplayBackedAgent) -> ObservationSnapshot:
-        self.adb.launch_package(agent.display_package())
+        agent.activate_display_session(0)
         return agent.observe_display(0)
 
     def input(self, agent: DisplayBackedAgent, action: AgentAction) -> ActionResult:
-        self.adb.launch_package(agent.display_package())
+        agent.activate_display_session(0)
         return agent.apply_display_action(0, action)

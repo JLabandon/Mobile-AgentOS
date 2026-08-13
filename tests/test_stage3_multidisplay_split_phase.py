@@ -33,6 +33,9 @@ class SplitFakeAgent:
     def display_package(self) -> str:
         return f"com.example.{self.config.name}"
 
+    def activate_display_session(self, display_id: int) -> None:
+        self.actions.append(f"{display_id}:ACTIVATE")
+
     def begin_task(self, subtask: SubTask, out_dir: Path) -> None:
         self.began = True
 
@@ -80,8 +83,8 @@ def test_multidisplay_split_phase_overlaps_thinking_and_other_agent_progress(tmp
     )
 
     assert runtime.run(task.task_id, tmp_path)
-    assert calendar.actions == ["3:FINISH"]
-    assert gmail.actions == ["4:FINISH"]
+    assert calendar.actions == ["3:ACTIVATE", "3:FINISH"]
+    assert gmail.actions == ["4:ACTIVATE", "4:FINISH"]
 
     thinking_calendar = next(event for event in reporter.state_events if event["agent"] == "calendar_agent" and event["state"] == "THINKING")
     gmail_acting = next(event for event in reporter.state_events if event["agent"] == "gmail_agent" and event["state"] == "ACTING")
@@ -125,3 +128,36 @@ def test_multidisplay_runtime_delivers_finished_peer_result_by_plan_edge(tmp_pat
     assert calendar.received_information[0].from_agent == "gmail_agent"
     assert calendar.received_information[0].to_agent == "calendar_agent"
     assert any(event["kind"] == "peer_result_delivered" and event["via"] == "peer" for event in reporter.events)
+
+
+def test_shared_foreground_runtime_runs_edge_source_before_target(tmp_path: Path) -> None:
+    reporter = RunReporter(tmp_path)
+    calendar = SplitFakeAgent("calendar", think_delay=0.0)
+    gmail = SplitFakeAgent("gmail", think_delay=0.0)
+    task = TaskPlan(
+        task_id="fake_stage3_foreground_edge",
+        goal="calendar depends on gmail in a single foreground display",
+        subtasks=(
+            SubTask(agent_name="calendar", instruction="calendar work", max_steps=2),
+            SubTask(agent_name="gmail", instruction="gmail provider work", max_steps=2),
+        ),
+        edges=(("gmail", "calendar"),),
+        mode="multidisplay_split_phase",
+    )
+    display_manager = DisplayManager(
+        [
+            DisplaySlot(display_id=0, observation_channel="foreground_uiautomator"),
+            DisplaySlot(display_id=0, observation_channel="foreground_uiautomator"),
+        ]
+    )
+    runtime = MultidisplaySplitPhaseRuntime(
+        agents={"calendar": calendar, "gmail": gmail},
+        reporter=reporter,
+        task_plans={task.task_id: task},
+        display_manager=display_manager,
+    )
+
+    assert runtime.run(task.task_id, tmp_path)
+    gmail_observed = next(event for event in reporter.events if event["kind"] == "snapshot_created" and event["agent"] == "gmail_agent")
+    calendar_observed = next(event for event in reporter.events if event["kind"] == "snapshot_created" and event["agent"] == "calendar_agent")
+    assert gmail_observed["time"] <= calendar_observed["time"]

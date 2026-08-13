@@ -429,16 +429,30 @@ class AppStaffAgent:
             self.package_name = self.adb.pick_package(self.config.package_candidates)
         return self.package_name
 
+    def activate_display_session(self, display_id: int) -> None:
+        if self._step_subtask is None:
+            raise RuntimeError(f"{self.name} has no active task. Call begin_task first.")
+        if self.package_name is None:
+            self.package_name = self.adb.pick_package(self.config.package_candidates)
+        if not self._step_launched:
+            self.launch(self._step_subtask)
+            self._step_launched = True
+            return
+        if display_id == 0:
+            foreground = self.adb.foreground_package()
+            if foreground != self.package_name:
+                self.reporter.event("app_resume", agent=self.name, package=self.package_name, foreground=foreground, method="launcher")
+                self.adb.launch_package(self.package_name)
+                self.adb.settle(1.0)
+            return
+        self.adb.launch_package_on_display(self.package_name, display_id)
+        self.adb.settle(1.0)
+
     def observe_display(self, display_id: int) -> ObservationSnapshot:
         if self._step_subtask is None or self._step_out_dir is None:
             raise RuntimeError(f"{self.name} has no active task. Call begin_task first.")
         if self.package_name is None:
             self.package_name = self.adb.pick_package(self.config.package_candidates)
-        if not self._step_launched:
-            self.adb.force_stop(self.package_name)
-            self.adb.launch_package_on_display(self.package_name, display_id)
-            self.adb.settle(2.0)
-            self._step_launched = True
         step_dir = self._step_out_dir / self.name / f"stage3_step_{self._step_index:02d}" / f"display_{display_id}"
         step_dir.mkdir(parents=True, exist_ok=True)
         self.adb.tap_display(display_id, 8, 8)
