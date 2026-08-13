@@ -70,6 +70,11 @@ class RunReporter:
         steward_visible: bool = True,
         user_visible: bool = True,
     ) -> None:
+        request_summary, request_payload_ref = self._ipc_text(request_id, "request", request_summary, payload_ref)
+        response_summary, response_payload_ref = self._ipc_text(request_id, "response", response_summary, payload_ref)
+        evidence, evidence_payload_ref = self._ipc_text(request_id, "evidence", evidence, payload_ref)
+        payload_ref = payload_ref or response_payload_ref or request_payload_ref or evidence_payload_ref
+        evidence_ref = evidence_ref or evidence_payload_ref
         item = {
             "time": datetime.now().isoformat(timespec="seconds"),
             "request_id": request_id,
@@ -91,6 +96,16 @@ class RunReporter:
         self.ipc_events.append(item)
         with self.ipc_ledger_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, ensure_ascii=False, default=json_default) + "\n")
+
+    def _ipc_text(self, request_id: str, field: str, text: str, existing_ref: str, *, limit: int = 240) -> tuple[str, str]:
+        value = str(text or "").strip()
+        if len(value) <= limit:
+            return value, ""
+        payload_dir = self.run_dir / "ipc_payloads"
+        payload_dir.mkdir(parents=True, exist_ok=True)
+        path = payload_dir / f"{request_id}_{field}.txt"
+        path.write_text(value + "\n", encoding="utf-8")
+        return value[: limit - 1].rstrip() + "…", existing_ref or str(path)
 
     def query_ipc_ledger(self, *, request_id: str | None = None, agent: str | None = None) -> list[dict[str, Any]]:
         events = self.ipc_events

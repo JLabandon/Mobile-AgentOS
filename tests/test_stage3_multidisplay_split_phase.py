@@ -22,10 +22,11 @@ class FakeConfig:
 
 
 class SplitFakeAgent:
-    def __init__(self, name: str, *, think_delay: float = 0.0) -> None:
+    def __init__(self, name: str, *, think_delay: float = 0.0, reporter: RunReporter | None = None) -> None:
         self.config = FakeConfig(name=name, label=name.title())
         self.name = f"{name}_agent"
         self.think_delay = think_delay
+        self.reporter = reporter
         self.began = False
         self.actions: list[str] = []
         self.received_information: list[RuntimeInformationResponse] = []
@@ -54,6 +55,15 @@ class SplitFakeAgent:
     def apply_display_action(self, display_id: int, action: AgentAction) -> ActionResult:
         time.sleep(0.02)
         self.actions.append(f"{display_id}:{action.action}")
+        if self.reporter:
+            self.reporter.event(
+                "post_action_completion_check",
+                agent=self.name,
+                visible_texts=[
+                    f"{self.config.name} done",
+                    "Investor Check-in Location: Googleplex Agenda: roadmap review",
+                ],
+            )
         return ActionResult(status="finished")
 
     def receive_information(self, response: object) -> None:
@@ -63,8 +73,8 @@ class SplitFakeAgent:
 
 def test_multidisplay_split_phase_overlaps_thinking_and_other_agent_progress(tmp_path: Path) -> None:
     reporter = RunReporter(tmp_path)
-    calendar = SplitFakeAgent("calendar", think_delay=0.05)
-    gmail = SplitFakeAgent("gmail", think_delay=0.0)
+    calendar = SplitFakeAgent("calendar", think_delay=0.05, reporter=reporter)
+    gmail = SplitFakeAgent("gmail", think_delay=0.0, reporter=reporter)
     task = TaskPlan(
         task_id="fake_stage3",
         goal="prove split phase overlap",
@@ -104,8 +114,8 @@ def test_multidisplay_split_phase_overlaps_thinking_and_other_agent_progress(tmp
 
 def test_multidisplay_runtime_delivers_finished_peer_result_by_plan_edge(tmp_path: Path) -> None:
     reporter = RunReporter(tmp_path)
-    calendar = SplitFakeAgent("calendar", think_delay=0.05)
-    gmail = SplitFakeAgent("gmail", think_delay=0.0)
+    calendar = SplitFakeAgent("calendar", think_delay=0.05, reporter=reporter)
+    gmail = SplitFakeAgent("gmail", think_delay=0.0, reporter=reporter)
     task = TaskPlan(
         task_id="fake_stage3_edge",
         goal="calendar uses information found by gmail",
@@ -127,13 +137,14 @@ def test_multidisplay_runtime_delivers_finished_peer_result_by_plan_edge(tmp_pat
     assert calendar.received_information
     assert calendar.received_information[0].from_agent == "gmail_agent"
     assert calendar.received_information[0].to_agent == "calendar_agent"
+    assert "Googleplex" in calendar.received_information[0].information
     assert any(event["kind"] == "peer_result_delivered" and event["via"] == "peer" for event in reporter.events)
 
 
 def test_shared_foreground_runtime_runs_edge_source_before_target(tmp_path: Path) -> None:
     reporter = RunReporter(tmp_path)
-    calendar = SplitFakeAgent("calendar", think_delay=0.0)
-    gmail = SplitFakeAgent("gmail", think_delay=0.0)
+    calendar = SplitFakeAgent("calendar", think_delay=0.0, reporter=reporter)
+    gmail = SplitFakeAgent("gmail", think_delay=0.0, reporter=reporter)
     task = TaskPlan(
         task_id="fake_stage3_foreground_edge",
         goal="calendar depends on gmail in a single foreground display",

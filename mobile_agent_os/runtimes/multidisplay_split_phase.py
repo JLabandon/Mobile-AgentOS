@@ -364,7 +364,11 @@ class MultidisplaySplitPhaseRuntime:
             snapshot = self.snapshots.latest_for_agent(source_agent_name)
             if not snapshot or not snapshot.visible_text.strip():
                 continue
-            peer_payload = self._bounded_snapshot_text(snapshot)
+            target_subtask = next((subtask for subtask in plan.subtasks if subtask.agent_name == target), None)
+            peer_payload = self._peer_result_summary(source_agent_name, snapshot, target_instruction=target_subtask.instruction if target_subtask else "")
+            evidence_ref = str(self.reporter.run_dir / f"{source_agent_name}" / f"{snapshot.snapshot_id}_peer_evidence.txt")
+            Path(evidence_ref).parent.mkdir(parents=True, exist_ok=True)
+            Path(evidence_ref).write_text(self._bounded_snapshot_text(snapshot, max_items=60, max_chars=4000) + "\n", encoding="utf-8")
             request_id = f"peer_result_{source}_{target}"
             response = RuntimeInformationResponse(
                 request_id=request_id,
@@ -395,7 +399,8 @@ class MultidisplaySplitPhaseRuntime:
                 mode=self.name,
                 via="peer",
                 response_summary=response.information,
-                evidence=response.evidence,
+                evidence="Provider app finished and exposed relevant UI evidence.",
+                evidence_ref=evidence_ref,
             )
             self.agents[target].receive_information(response)
             if self._states.get(target_agent_name) == "WAIT_PEER":
@@ -415,6 +420,71 @@ class MultidisplaySplitPhaseRuntime:
                 break
         text = "\n".join(values) or snapshot.visible_text
         return text[:max_chars]
+
+    def _peer_result_summary(self, source_agent_name: str, snapshot: ObservationSnapshot, *, target_instruction: str = "") -> str:
+        visible_lines: list[str] = []
+        for event in reversed(self.reporter.events):
+            if event.get("agent") != source_agent_name:
+                continue
+            event_lines = [str(item).strip() for item in event.get("visible_texts", []) if str(item).strip()]
+            if event_lines:
+                visible_lines = event_lines
+                break
+        visible_lines = visible_lines or [line.strip() for line in self._bounded_snapshot_text(snapshot, max_items=30, max_chars=1600).splitlines() if line.strip()]
+        focused = self._select_relevant_lines(visible_lines, target_instruction)
+        if focused:
+            return "\n".join(focused)[:800]
+        for event in reversed(self.reporter.events):
+            if event.get("kind") != "agent_step" or event.get("agent") != source_agent_name:
+                continue
+            action = event.get("action")
+            if isinstance(action, dict):
+                for key in ("information", "result", "reason"):
+                    value = str(action.get(key) or "").strip()
+                    if value:
+                        return value[:500]
+            reason = str(event.get("reason") or "").strip()
+            if reason:
+                return reason[:500]
+        return self._bounded_snapshot_text(snapshot, max_items=8, max_chars=500)
+
+    def _select_relevant_lines(self, lines: list[str], target_instruction: str) -> list[str]:
+        instruction_tokens = {
+            token
+            for token in target_instruction.lower().replace("_", " ").split()
+            if len(token) >= 4
+        }
+        signal_words = {
+            "agenda",
+            "address",
+            "date",
+            "details",
+            "email",
+            "end",
+            "location",
+            "meeting",
+            "notes",
+            "place",
+            "start",
+            "subject",
+            "time",
+            "title",
+        }
+        scored: list[tuple[int, int, str]] = []
+        for index, line in enumerate(lines):
+            lowered = line.lower()
+            tokens = set(lowered.replace(":", " ").replace(",", " ").split())
+            score = len(tokens & signal_words) * 3 + len(tokens & instruction_tokens)
+            if score > 0:
+                scored.append((score, index, line))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        selected: list[str] = []
+        for _, _, line in scored:
+            if line not in selected:
+                selected.append(line)
+            if len(selected) >= 6:
+                break
+        return selected
 
     def _resources_for_action(self, slot: DisplaySlot, action: AgentAction) -> list[str]:
         resources = [display_input_resource(slot.display_id), f"app_session:{slot.owner_agent}"]

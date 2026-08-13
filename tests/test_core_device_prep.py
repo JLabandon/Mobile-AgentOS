@@ -62,6 +62,11 @@ def test_prepare_device_applies_generic_preflight_and_clock_reset(tmp_path: Path
     prepare_device(adb, configs, reporter)  # type: ignore[arg-type]
 
     assert ("shell", ("settings", "put", "global", "window_animation_scale", "0")) in adb.calls
+    assert (
+        "shell",
+        ("content", "delete", "--uri", "content://com.android.calendar/events", "--where", "1=1"),
+    ) in adb.calls
     assert ("clear_app_data", ("com.google.android.deskclock",)) in adb.calls
     trace = (tmp_path / "trace.jsonl").read_text(encoding="utf-8")
+    assert "preflight_calendar_events_clear" in trace
     assert "preflight_clock_alarms_clear" in trace

@@ -33,3 +33,25 @@ def test_ipc_ledger_writes_queryable_events(tmp_path) -> None:
     events = reporter.query_ipc_ledger(request_id=request.request_id)
     assert [event["status"] for event in events] == ["created", "routed", "received", "success", "delivered"]
     assert reporter.ipc_ledger_path.exists()
+
+
+def test_ipc_ledger_keeps_long_payloads_out_of_main_ledger(tmp_path) -> None:
+    reporter = RunReporter(tmp_path)
+    long_text = "meeting detail " * 80
+
+    reporter.ipc_event(
+        request_id="req_long",
+        message_kind="RuntimeInformationResponse",
+        status="delivered",
+        from_agent="gmail_agent",
+        to_agent="calendar_agent",
+        response_summary=long_text,
+        evidence=long_text,
+    )
+
+    event = reporter.query_ipc_ledger(request_id="req_long")[0]
+    assert len(event["response_summary"]) < len(long_text)
+    assert event["response_summary"].endswith("…")
+    assert event["payload_ref"]
+    assert event["evidence_ref"]
+    assert "meeting detail" in (tmp_path / "ipc_payloads" / "req_long_response.txt").read_text(encoding="utf-8")

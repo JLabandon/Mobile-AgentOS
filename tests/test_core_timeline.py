@@ -38,3 +38,6 @@ def test_timeline_contains_agents_states_and_ipc(tmp_path) -> None:
     assert "calendar_agent" in html
     assert "WAIT_PEER" in html
     assert "RuntimeInformationRequest" in html
+    assert "Agent State Lanes" in html
+    assert "IPC Ledger" in html
+    assert "Key Runtime Events" in html
