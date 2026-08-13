@@ -22,7 +22,7 @@ from ..runtime_requests import RuntimeInformationRequest
 from ..runtime_requests import RuntimeInformationResponse
 from ..snapshots import ObservationSnapshot, PendingAction, PendingDecision, SnapshotStore, stable_digest
 from ..steward import StewardAgent
-from ..task_plan import TaskPlan
+from ..task_plan import InformationFlow, TaskPlan
 
 
 class SplitPhaseAgent(DisplayBackedAgent, Protocol):
@@ -222,9 +222,9 @@ class MultidisplaySplitPhaseRuntime:
         if not shared_foreground:
             return names
         blocked_targets = {
-            target
-            for source, target in plan.edges
-            if f"{source}_agent" not in finished
+            flow.to_agent
+            for flow in self._plan_information_flows(plan)
+            if f"{flow.from_agent}_agent" not in finished
         }
         unblocked = [name for name in names if name not in blocked_targets]
         blocked = [name for name in names if name in blocked_targets]
@@ -353,30 +353,35 @@ class MultidisplaySplitPhaseRuntime:
 
     def _deliver_finished_edge_results(self, plan: TaskPlan, finished: set[str]) -> bool:
         delivered = False
-        for source, target in plan.edges:
-            edge = (source, target)
+        for flow in self._plan_information_flows(plan):
+            edge = (flow.from_agent, flow.to_agent, flow.name)
             if edge in self._delivered_edges:
                 continue
-            source_agent_name = f"{source}_agent"
-            target_agent_name = f"{target}_agent"
-            if source_agent_name not in finished or target not in self.agents:
+            source_agent_name = f"{flow.from_agent}_agent"
+            target_agent_name = f"{flow.to_agent}_agent"
+            if source_agent_name not in finished or flow.to_agent not in self.agents:
                 continue
             snapshot = self.snapshots.latest_for_agent(source_agent_name)
             if not snapshot or not snapshot.visible_text.strip():
                 continue
-            target_subtask = next((subtask for subtask in plan.subtasks if subtask.agent_name == target), None)
-            peer_payload = self._peer_result_summary(source_agent_name, snapshot, target_instruction=target_subtask.instruction if target_subtask else "")
+            target_subtask = next((subtask for subtask in plan.subtasks if subtask.agent_name == flow.to_agent), None)
+            peer_payload = self._peer_result_summary(
+                source_agent_name,
+                snapshot,
+                target_instruction=target_subtask.instruction if target_subtask else "",
+                flow=flow,
+            )
             evidence_ref = str(self.reporter.run_dir / f"{source_agent_name}" / f"{snapshot.snapshot_id}_peer_evidence.txt")
             Path(evidence_ref).parent.mkdir(parents=True, exist_ok=True)
             Path(evidence_ref).write_text(self._bounded_snapshot_text(snapshot, max_items=60, max_chars=4000) + "\n", encoding="utf-8")
-            request_id = f"peer_result_{source}_{target}"
+            request_id = f"planner_flow_{flow.name}_{flow.from_agent}_{flow.to_agent}"
             response = RuntimeInformationResponse(
                 request_id=request_id,
                 from_agent=source_agent_name,
                 to_agent=target_agent_name,
                 status="success",
                 information=peer_payload,
-                source_app=getattr(self.agents[source].config, "label", source),
+                source_app=getattr(self.agents[flow.from_agent].config, "label", flow.from_agent),
                 confidence="medium",
                 evidence=peer_payload,
                 limitations="Delivered by AgentOS runtime from a completed peer agent snapshot along a planner edge.",
@@ -388,6 +393,7 @@ class MultidisplaySplitPhaseRuntime:
                 target_agent=target_agent_name,
                 request_id=request_id,
                 via="peer",
+                flow=flow,
                 snapshot_id=snapshot.snapshot_id,
             )
             self.reporter.ipc_event(
@@ -398,11 +404,12 @@ class MultidisplaySplitPhaseRuntime:
                 to_agent=response.to_agent,
                 mode=self.name,
                 via="peer",
+                request_summary=f"{flow.name}: {', '.join(flow.fields) or 'planner-declared information'}",
                 response_summary=response.information,
                 evidence="Provider app finished and exposed relevant UI evidence.",
                 evidence_ref=evidence_ref,
             )
-            self.agents[target].receive_information(response)
+            self.agents[flow.to_agent].receive_information(response)
             if self._states.get(target_agent_name) == "WAIT_PEER":
                 self._set_state(target_agent_name, "READY", request_id=request_id, from_agent=source_agent_name)
             self._delivered_edges.add(edge)
@@ -421,7 +428,14 @@ class MultidisplaySplitPhaseRuntime:
         text = "\n".join(values) or snapshot.visible_text
         return text[:max_chars]
 
-    def _peer_result_summary(self, source_agent_name: str, snapshot: ObservationSnapshot, *, target_instruction: str = "") -> str:
+    def _peer_result_summary(
+        self,
+        source_agent_name: str,
+        snapshot: ObservationSnapshot,
+        *,
+        target_instruction: str = "",
+        flow: InformationFlow | None = None,
+    ) -> str:
         visible_lines: list[str] = []
         for event in reversed(self.reporter.events):
             if event.get("agent") != source_agent_name:
@@ -431,7 +445,7 @@ class MultidisplaySplitPhaseRuntime:
                 visible_lines = event_lines
                 break
         visible_lines = visible_lines or [line.strip() for line in self._bounded_snapshot_text(snapshot, max_items=30, max_chars=1600).splitlines() if line.strip()]
-        focused = self._select_relevant_lines(visible_lines, target_instruction)
+        focused = self._select_relevant_lines(visible_lines, target_instruction, fields=flow.fields if flow else ())
         if focused:
             return "\n".join(focused)[:800]
         for event in reversed(self.reporter.events):
@@ -448,10 +462,10 @@ class MultidisplaySplitPhaseRuntime:
                 return reason[:500]
         return self._bounded_snapshot_text(snapshot, max_items=8, max_chars=500)
 
-    def _select_relevant_lines(self, lines: list[str], target_instruction: str) -> list[str]:
+    def _select_relevant_lines(self, lines: list[str], target_instruction: str, *, fields: tuple[str, ...] = ()) -> list[str]:
         instruction_tokens = {
             token
-            for token in target_instruction.lower().replace("_", " ").split()
+            for token in f"{target_instruction} {' '.join(fields)}".lower().replace("_", " ").split()
             if len(token) >= 4
         }
         signal_words = {
@@ -485,6 +499,11 @@ class MultidisplaySplitPhaseRuntime:
             if len(selected) >= 6:
                 break
         return selected
+
+    def _plan_information_flows(self, plan: TaskPlan) -> tuple[InformationFlow, ...]:
+        if plan.information_flows:
+            return plan.information_flows
+        return tuple(InformationFlow(from_agent=source, to_agent=target) for source, target in plan.edges)
 
     def _resources_for_action(self, slot: DisplaySlot, action: AgentAction) -> list[str]:
         resources = [display_input_resource(slot.display_id), f"app_session:{slot.owner_agent}"]

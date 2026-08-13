@@ -24,6 +24,19 @@
   "calendar_gmail_meeting_detail": {
     "goal": "Schedule a calendar event titled 'Investor Check-in {run_id}' using the meeting details from the Investor Check-in email.",
     "corner_cases": ["real_email_app", "search_before_answer", "provider_may_fail_if_email_missing"],
+    "edges": [["gmail", "calendar"]],
+    "information_flows": [
+      {
+        "from_agent": "gmail",
+        "to_agent": "calendar",
+        "name": "meeting_details",
+        "required": true,
+        "delivery": "on_source_done",
+        "content_contract": {
+          "fields": ["title", "date", "start_time", "end_time", "location", "notes", "agenda"]
+        }
+      }
+    ],
     "success_criteria": {
       "visible_terms": ["Investor Check-in {run_id}", "Googleplex", "roadmap"],
       "not_visible_at_finish": ["Save"]

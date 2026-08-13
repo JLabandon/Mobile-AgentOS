@@ -7,7 +7,7 @@ from typing import Any
 from .agents import AppStaffAgent, SubTask
 from .report import RunReporter
 from .runtime_requests import RuntimeInformationRequest, RuntimeInformationResponse, RuntimeOperationRequest, RuntimeOperationResponse
-from .task_plan import TaskPlan
+from .task_plan import InformationFlow, TaskPlan
 
 
 class StewardAgent:
@@ -38,6 +38,7 @@ class StewardAgent:
             mode=self.mode,
             subtasks=configured.subtasks,
             edges=configured.edges,
+            information_flows=configured.information_flows or self._flows_from_edges(configured.edges),
             success_criteria=configured.success_criteria,
             environment=configured.environment,
         )
@@ -63,7 +64,10 @@ class StewardAgent:
             f"{strategy_text} "
             "Return schema: {\"subtasks\":[{\"agent_name\":\"calendar\",\"instruction\":\"...\","
             "\"max_steps\":12,\"expected_visible_terms\":[\"...\"],\"not_visible_at_finish\":[\"...\"]}],"
-            "\"edges\":[[\"calendar\",\"gmail\"]],\"reason\":\"short\"}."
+            "\"edges\":[[\"gmail\",\"calendar\"]],"
+            "\"information_flows\":[{\"from_agent\":\"gmail\",\"to_agent\":\"calendar\",\"name\":\"meeting_details\","
+            "\"required\":true,\"delivery\":\"on_source_done\",\"content_contract\":{\"fields\":[\"title\",\"location\",\"notes\"]}}],"
+            "\"reason\":\"short\"}."
         )
         app_lines = []
         for agent in self.agents.values():
@@ -81,7 +85,9 @@ class StewardAgent:
             "Planning requirements:\n"
             "- Select only agents needed for this goal.\n"
             "- Decompose at app boundaries, not procedure roles such as planner/coder.\n"
-            "- Edges should represent possible information or operation flow between app agents.\n"
+            "- Edges should represent scheduling dependency order between app agents.\n"
+            "- information_flows should represent planner-declared data handoff: source agent output that should be delivered to a target agent without waiting for a runtime request.\n"
+            "- Use runtime REQUEST_INFORMATION only for facts that cannot be anticipated at planning time.\n"
             "- expected_visible_terms must describe final user data or final status text, not transient button labels such as Save, Done, Set Alarm, OK, Create, Submit, or Confirm.\n"
             "- Use enough max_steps for real mobile UI flows. Simple read-only subtasks usually need 4-6; creation flows with pickers, search suggestions, labels, or confirmation dialogs usually need 14-18.\n"
             f"{self._planner_strategy_bullets()}"
@@ -116,12 +122,14 @@ class StewardAgent:
         parsed = llm.parse_json_content(raw_content)
         subtasks = self._parse_planned_subtasks(parsed)
         edges = self._parse_planned_edges(parsed)
+        information_flows = self._parse_planned_information_flows(parsed, edges)
         plan = TaskPlan(
             task_id=configured.task_id,
             goal=configured.goal,
             mode=self.mode,
             subtasks=subtasks,
             edges=edges,
+            information_flows=information_flows,
             success_criteria=configured.success_criteria,
             environment=configured.environment,
         )
@@ -227,6 +235,36 @@ class StewardAgent:
                 edges.append((source, target))
         return tuple(edges)
 
+    def _parse_planned_information_flows(self, parsed: dict[str, Any], edges: tuple[tuple[str, str], ...]) -> tuple[InformationFlow, ...]:
+        raw_flows = parsed.get("information_flows", [])
+        flows: list[InformationFlow] = []
+        if isinstance(raw_flows, list):
+            for item in raw_flows:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    source = str(item[0]).removesuffix("_agent").strip()
+                    target = str(item[1]).removesuffix("_agent").strip()
+                    name = "runtime_information"
+                    required = True
+                    delivery = "on_source_done"
+                    fields: tuple[str, ...] = ()
+                elif isinstance(item, dict):
+                    source = str(item.get("from_agent", item.get("source", ""))).removesuffix("_agent").strip()
+                    target = str(item.get("to_agent", item.get("target", ""))).removesuffix("_agent").strip()
+                    name = str(item.get("name", "runtime_information")).strip() or "runtime_information"
+                    required = bool(item.get("required", True))
+                    delivery = str(item.get("delivery", "on_source_done")).strip() or "on_source_done"
+                    contract = item.get("content_contract", {})
+                    raw_fields = contract.get("fields", []) if isinstance(contract, dict) else item.get("fields", [])
+                    fields = tuple(str(field).strip() for field in raw_fields if str(field).strip()) if isinstance(raw_fields, list) else ()
+                else:
+                    continue
+                if source in self.agents and target in self.agents and source != target:
+                    flows.append(InformationFlow(source, target, name=name, required=required, delivery=delivery, fields=fields))
+        return tuple(flows) or self._flows_from_edges(edges)
+
+    def _flows_from_edges(self, edges: tuple[tuple[str, str], ...]) -> tuple[InformationFlow, ...]:
+        return tuple(InformationFlow(from_agent=source, to_agent=target) for source, target in edges)
+
     def _planner_strategy_name(self) -> str:
         if self._uses_upfront_decomposition():
             return "upfront_parallelism_surface"
@@ -243,7 +281,7 @@ class StewardAgent:
                 "Planning strategy: use MobileSteward-style upfront app decomposition to expose task-level concurrency. "
                 "If an information-source app is clearly useful, schedule it as its own top-level subtask so the runtime can run it in parallel with downstream user-visible work. "
                 "If an operation-provider app is clearly useful, schedule it as a top-level subtask when its work can progress independently. "
-                "For an information dependency, add a provider-to-requester edge. "
+                "For an information dependency, add a provider-to-requester edge and a matching information_flow with a concise content contract. "
                 "For an operation dependency, add a provider-to-requester edge when a result should wake the downstream app. "
                 f"{execution_note}"
             )
@@ -252,14 +290,15 @@ class StewardAgent:
     def _planner_strategy_bullets(self) -> str:
         if self._uses_upfront_decomposition():
             runtime_line = (
-                "- For steward_serial, downstream subtasks should mention they will use information produced by upstream subtasks.\n"
+                "- For steward_serial, downstream subtasks should mention they will use information produced by upstream subtasks, and information_flows should define what to forward.\n"
                 if self._is_steward_baseline()
-                else "- For multidisplay_split_phase, create top-level subtasks for provider and requester apps when both can make independent progress; runtime IPC will deliver whichever information becomes available first.\n"
+                else "- For multidisplay_split_phase, create top-level subtasks for provider and requester apps when both can make independent progress; planner-declared information_flows are delivered on source completion, and runtime requests handle late-bound missing facts.\n"
             )
             return (
                 f"- For {self.mode}, it is acceptable to schedule information-source agents as top-level subtasks when the goal clearly benefits from them.\n"
                 f"- For {self.mode}, expose possible parallel work at app boundaries instead of forcing one requester app to discover every dependency alone.\n"
                 "- Avoid turning providers into procedure roles; each subtask must still be app-specific work performed inside that app.\n"
+                "- For every clear provider-to-requester dependency, add information_flows with from_agent, to_agent, name, delivery=on_source_done, and content_contract.fields.\n"
                 f"{runtime_line}"
             )
         return "- Decompose the user goal at app boundaries and add edges for information or operation flow.\n"
@@ -400,20 +439,20 @@ class StewardAgent:
 
     def _forward_finished_subtask_result(self, plan: TaskPlan, subtask: SubTask) -> None:
         source_agent_name = f"{subtask.agent_name}_agent"
-        for source, target in plan.edges:
-            if source != subtask.agent_name or target not in self.agents:
+        for flow in self._plan_information_flows(plan):
+            if flow.from_agent != subtask.agent_name or flow.to_agent not in self.agents:
                 continue
-            information, evidence = self._extract_finished_subtask_result(plan, subtask, target)
+            information, evidence = self._extract_finished_subtask_result(plan, subtask, flow)
             if not information:
                 continue
-            request_id = f"steward_result_{source}_{target}"
+            request_id = f"steward_flow_{flow.name}_{flow.from_agent}_{flow.to_agent}"
             response = RuntimeInformationResponse(
                 request_id=request_id,
                 from_agent=source_agent_name,
-                to_agent=f"{target}_agent",
+                to_agent=f"{flow.to_agent}_agent",
                 status="success",
                 information=information,
-                source_app=self.agents[source].config.label,
+                source_app=self.agents[flow.from_agent].config.label,
                 confidence="medium",
                 evidence=evidence or information,
                 limitations="Extracted by Steward from the upstream agent's latest visible UI text.",
@@ -421,7 +460,8 @@ class StewardAgent:
             self.reporter.event(
                 "steward_extract_result",
                 source_agent=source_agent_name,
-                target_agent=f"{target}_agent",
+                target_agent=f"{flow.to_agent}_agent",
+                flow=flow,
                 information=information,
                 evidence=evidence,
             )
@@ -436,18 +476,18 @@ class StewardAgent:
                 response_summary=response.information,
                 evidence=response.evidence,
             )
-            self.agents[target].receive_information(response)
+            self.agents[flow.to_agent].receive_information(response)
 
-    def _extract_finished_subtask_result(self, plan: TaskPlan, subtask: SubTask, target: str) -> tuple[str, str]:
+    def _extract_finished_subtask_result(self, plan: TaskPlan, subtask: SubTask, flow: InformationFlow) -> tuple[str, str]:
         source_agent_name = f"{subtask.agent_name}_agent"
         visible = self._latest_visible_information(source_agent_name)
         if not visible:
             return "", ""
-        prompt_dir = self.reporter.run_dir / "steward_agent" / "extract" / plan.task_id / f"{subtask.agent_name}_to_{target}"
+        prompt_dir = self.reporter.run_dir / "steward_agent" / "extract" / plan.task_id / f"{subtask.agent_name}_to_{flow.to_agent}"
         prompt_dir.mkdir(parents=True, exist_ok=True)
         target_instruction = ""
         for item in plan.subtasks:
-            if item.agent_name == target:
+            if item.agent_name == flow.to_agent:
                 target_instruction = item.instruction
                 break
         system = (
@@ -458,6 +498,7 @@ class StewardAgent:
         )
         user = (
             f"Overall user goal:\n{plan.goal}\n\n"
+            f"Planner-declared information flow:\nname={flow.name}; fields={', '.join(flow.fields) or 'unspecified'}; required={flow.required}; delivery={flow.delivery}\n\n"
             f"Source subtask:\n{subtask.instruction}\n\n"
             f"Target subtask:\n{target_instruction}\n\n"
             f"Visible source-app UI text:\n{visible}\n\n"
@@ -498,8 +539,11 @@ class StewardAgent:
                 return visible, "raw visible UI text fallback"
             return information, evidence
         except Exception as exc:
-            self.reporter.event("steward_extract_failed", source_agent=source_agent_name, target_agent=f"{target}_agent", reason=str(exc))
+            self.reporter.event("steward_extract_failed", source_agent=source_agent_name, target_agent=f"{flow.to_agent}_agent", reason=str(exc))
             return visible, "raw visible UI text fallback"
+
+    def _plan_information_flows(self, plan: TaskPlan) -> tuple[InformationFlow, ...]:
+        return plan.information_flows or self._flows_from_edges(plan.edges)
 
     def _latest_visible_information(self, agent_name: str) -> str:
         for event in reversed(self.reporter.events):

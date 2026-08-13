@@ -29,6 +29,16 @@ class FakeLlm:
                     }
                 ],
                 "edges": [["calendar", "gmail"]],
+                "information_flows": [
+                    {
+                        "from_agent": "gmail",
+                        "to_agent": "calendar",
+                        "name": "meeting_details",
+                        "required": True,
+                        "delivery": "on_source_done",
+                        "content_contract": {"fields": ["location", "notes"]},
+                    }
+                ],
                 "reason": "Calendar creates event; Gmail provides details.",
             }
         )
@@ -86,6 +96,9 @@ def test_dynamic_steward_plan_uses_goal_and_app_profiles_not_hidden_oracle(tmp_p
 
     assert [subtask.agent_name for subtask in plan.subtasks] == ["calendar"]
     assert plan.edges == (("calendar", "gmail"),)
+    assert plan.information_flows[0].from_agent == "gmail"
+    assert plan.information_flows[0].to_agent == "calendar"
+    assert plan.information_flows[0].fields == ("location", "notes")
     _, user_prompt = llm.prompts[0]
     assert "Schedule an Investor Check-in" in user_prompt
     assert "Google Calendar" in user_prompt
@@ -127,6 +140,7 @@ def test_multidisplay_planner_uses_upfront_decomposition_without_steward_forward
     system, user = llm.prompts[0]
     assert "MobileSteward-style upfront app decomposition" in system
     assert "AgentOS runtime will schedule all recruited AppAgents" in system
+    assert "information_flows" in system
     assert "provider and requester apps" in user
     assert "do not schedule it as a top-level subtask" not in user
 
@@ -176,12 +190,46 @@ def test_steward_serial_forwards_upstream_visible_result_to_downstream_agent(tmp
             SubTask(agent_name="calendar", instruction="Create event using upstream information."),
         ),
         edges=(("keep", "calendar"),),
+        information_flows=(),
     )
     steward = StewardAgent({"keep": keep, "calendar": calendar}, reporter, {plan.task_id: plan}, mode="steward_serial")  # type: ignore[arg-type]
 
     assert steward.run_plan(plan, tmp_path)
     assert calendar.received_information
     assert "Location: Googleplex" in calendar.received_information[0].information
+
+
+def test_task_loader_parses_information_flows(tmp_path: Path) -> None:
+    task_path = tmp_path / "tasks.json"
+    task_path.write_text(
+        """
+{
+  "calendar_gmail": {
+    "goal": "Create event abc123",
+    "edges": [["gmail", "calendar"]],
+    "information_flows": [
+      {
+        "from_agent": "gmail",
+        "to_agent": "calendar",
+        "name": "meeting_details",
+        "required": true,
+        "delivery": "on_source_done",
+        "content_contract": {"fields": ["location", "agenda"]}
+      }
+    ]
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    plans = load_task_plans(task_path, runtime="multidisplay_split_phase")
+    flow = plans["calendar_gmail"].information_flows[0]
+
+    assert flow.from_agent == "gmail"
+    assert flow.to_agent == "calendar"
+    assert flow.name == "meeting_details"
+    assert flow.fields == ("location", "agenda")
 
 
 def test_task_loader_applies_run_variables(tmp_path: Path) -> None:

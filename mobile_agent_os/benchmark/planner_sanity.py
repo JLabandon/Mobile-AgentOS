@@ -62,6 +62,17 @@ def run_planner_sanity(*, suite_path: Path, apps_path: Path, out_dir: Path, mode
                         for subtask in plan.subtasks
                     ],
                     "edges": [list(edge) for edge in plan.edges],
+                    "information_flows": [
+                        {
+                            "from_agent": flow.from_agent,
+                            "to_agent": flow.to_agent,
+                            "name": flow.name,
+                            "required": flow.required,
+                            "delivery": flow.delivery,
+                            "fields": list(flow.fields),
+                        }
+                        for flow in plan.information_flows
+                    ],
                     "hidden_prompt_leaks": leaked,
                 }
             )
@@ -72,6 +83,7 @@ def run_planner_sanity(*, suite_path: Path, apps_path: Path, out_dir: Path, mode
 
 
 def _hidden_tokens(success_criteria: dict[str, Any], environment: dict[str, Any]) -> set[str]:
+    control_terms = {"save", "done", "ok", "create", "submit", "confirm", "authorize", "pay", "set alarm"}
     values: set[str] = set()
     for item in success_criteria.get("visible_terms", []):
         values.add(str(item))
@@ -82,7 +94,7 @@ def _hidden_tokens(success_criteria: dict[str, Any], environment: dict[str, Any]
             values.update(str(item) for item in value)
         else:
             values.add(str(value))
-    return {value for value in values if len(value) >= 4}
+    return {value for value in values if len(value) >= 4 and value.strip().lower() not in control_terms}
 
 
 def _steward_prompt(out_dir: Path, mode: str, task_id: str) -> str:
@@ -110,6 +122,7 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
         lines.append("")
         lines.append(f"- Goal: {row['goal']}")
         lines.append(f"- Edges: `{row['edges']}`")
+        lines.append(f"- Information flows: `{row['information_flows']}`")
         lines.append(f"- Hidden leaks: `{row['hidden_prompt_leaks']}`")
         lines.append("- Subtasks:")
         for subtask in row["subtasks"]:

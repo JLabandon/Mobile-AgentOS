@@ -11,7 +11,7 @@ from mobile_agent_os.report import RunReporter
 from mobile_agent_os.runtime_requests import RuntimeInformationResponse
 from mobile_agent_os.runtimes.multidisplay_split_phase import MultidisplaySplitPhaseRuntime
 from mobile_agent_os.snapshots import ObservationSnapshot
-from mobile_agent_os.task_plan import TaskPlan
+from mobile_agent_os.task_plan import InformationFlow, TaskPlan
 
 
 @dataclass
@@ -124,6 +124,7 @@ def test_multidisplay_runtime_delivers_finished_peer_result_by_plan_edge(tmp_pat
             SubTask(agent_name="gmail", instruction="gmail provider work", max_steps=2),
         ),
         edges=(("gmail", "calendar"),),
+        information_flows=(InformationFlow("gmail", "calendar", name="meeting_details", fields=("location", "agenda")),),
         mode="multidisplay_split_phase",
     )
     runtime = MultidisplaySplitPhaseRuntime(
@@ -138,7 +139,9 @@ def test_multidisplay_runtime_delivers_finished_peer_result_by_plan_edge(tmp_pat
     assert calendar.received_information[0].from_agent == "gmail_agent"
     assert calendar.received_information[0].to_agent == "calendar_agent"
     assert "Googleplex" in calendar.received_information[0].information
+    assert "meeting_details" in calendar.received_information[0].request_id
     assert any(event["kind"] == "peer_result_delivered" and event["via"] == "peer" for event in reporter.events)
+    assert any(event["request_summary"] == "meeting_details: location, agenda" for event in reporter.ipc_events)
 
 
 def test_shared_foreground_runtime_runs_edge_source_before_target(tmp_path: Path) -> None:
