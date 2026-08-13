@@ -4,6 +4,7 @@ import html
 import json
 from pathlib import Path
 from typing import Any
+from datetime import datetime
 
 
 STATE_COLORS = {
@@ -44,12 +45,15 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 def write_timeline(run_root: Path, run_dirs: list[Path]) -> Path:
     runs = []
     for run_dir in run_dirs:
+        trace = read_jsonl(run_dir / "trace.jsonl")
+        states = read_jsonl(run_dir / "state_timeline.jsonl")
+        _attach_relative_times(trace, states)
         runs.append(
             {
                 "name": run_dir.name,
-                "states": read_jsonl(run_dir / "state_timeline.jsonl"),
+                "states": states,
                 "ipc": read_jsonl(run_dir / "ipc_ledger.jsonl"),
-                "trace": read_jsonl(run_dir / "trace.jsonl"),
+                "trace": trace,
                 "metrics": _read_json(run_dir / "metrics.json"),
             }
         )
@@ -63,6 +67,33 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _attach_relative_times(trace: list[dict[str, Any]], states: list[dict[str, Any]]) -> None:
+    if not trace:
+        return
+    base = _parse_time(str(trace[0].get("time", "")))
+    if not base:
+        return
+    for event in trace:
+        if "t" in event:
+            continue
+        current = _parse_time(str(event.get("time", "")))
+        if current:
+            event["t"] = round((current - base).total_seconds(), 3)
+    first_state_t = min((float(event.get("t", 0.0)) for event in states), default=0.0)
+    if first_state_t:
+        for event in states:
+            event["t"] = round(float(event.get("t", 0.0)) - first_state_t, 3)
+
+
+def _parse_time(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _html(data: str) -> str:
@@ -144,7 +175,7 @@ def _html(data: str) -> str:
     .agent-name {{ font-weight: 600; overflow: hidden; text-overflow: ellipsis; }}
     .track {{
       position: relative;
-      height: 30px;
+      height: 34px;
       border: 1px solid #e6e6e6;
       background: linear-gradient(90deg, #fff, #fafafa);
       border-radius: 4px;
@@ -157,11 +188,33 @@ def _html(data: str) -> str:
       min-width: 2px;
       color: #111;
       font-size: 11px;
-      line-height: 30px;
+      line-height: 34px;
       text-align: center;
       overflow: hidden;
       white-space: nowrap;
       border-right: 1px solid rgba(255,255,255,.65);
+    }}
+    .switch {{
+      position: absolute;
+      top: -1px;
+      width: 2px;
+      height: 36px;
+      background: #111827;
+      box-shadow: 0 0 0 2px rgba(255,255,255,.9);
+      z-index: 1;
+    }}
+    .switch::after {{
+      content: attr(data-label);
+      position: absolute;
+      top: -18px;
+      left: 4px;
+      color: #111827;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-size: 10px;
+      white-space: nowrap;
     }}
     .legend {{
       display: flex;
@@ -173,12 +226,12 @@ def _html(data: str) -> str:
     }}
     .chip {{ display: inline-flex; align-items: center; gap: 5px; }}
     .dot {{ width: 10px; height: 10px; border-radius: 2px; display: inline-block; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th, td {{ text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid #edf0f2; }}
-    th {{ color: var(--muted); font-weight: 600; background: #fbfbfc; position: sticky; top: 56px; }}
+    table {{ width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }}
+    th, td {{ text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid #edf0f2; overflow-wrap: anywhere; word-break: break-word; }}
+    th {{ color: var(--muted); font-weight: 600; background: #fbfbfc; }}
     code {{ background: #f1f3f4; border-radius: 4px; padding: 1px 4px; }}
     .muted {{ color: var(--muted); }}
-    .summary {{ max-width: 620px; white-space: normal; }}
+    .summary {{ max-width: 620px; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }}
     details summary {{ cursor: pointer; color: #174ea6; }}
     pre {{ white-space: pre-wrap; max-height: 260px; overflow: auto; background: #f6f8fa; padding: 10px; border-radius: 6px; }}
   </style>
@@ -215,7 +268,7 @@ def _html(data: str) -> str:
         return;
       }}
       const q = filter.value.trim().toLowerCase();
-      app.innerHTML = metrics(run.metrics) + lanes(run.states) + ipcTable(run.ipc, q) + eventTable(run.trace, q);
+      app.innerHTML = metrics(run.metrics) + lanes(run.states, run.trace) + ipcTable(run.ipc, q) + eventTable(run.trace, q);
     }}
 
     function metrics(m) {{
@@ -232,13 +285,19 @@ def _html(data: str) -> str:
       return `<div class="metrics">${{items.map(([k,v]) => `<div class="metric"><span>${{esc(k)}}</span><b>${{esc(v)}}</b></div>`).join('')}}</div>`;
     }}
 
-    function lanes(states) {{
+    function lanes(states, trace) {{
       const byAgent = new Map();
       let maxT = 1;
       for (const ev of states) {{
         if (!byAgent.has(ev.agent)) byAgent.set(ev.agent, []);
         byAgent.get(ev.agent).push(ev);
         maxT = Math.max(maxT, Number(ev.t || 0));
+      }}
+      for (const ev of trace) {{
+        if ((ev.kind === 'app_launch' || ev.kind === 'app_resume') && ev.agent) {{
+          maxT = Math.max(maxT, Number(ev.t || 0));
+          if (!byAgent.has(ev.agent)) byAgent.set(ev.agent, []);
+        }}
       }}
       let rows = '';
       for (const [agent, events] of [...byAgent.entries()].sort()) {{
@@ -252,7 +311,13 @@ def _html(data: str) -> str:
           const title = `${{ev.state}} ${{start.toFixed(2)}}s-${{end.toFixed(2)}}s\\n${{JSON.stringify(ev, null, 2)}}`;
           return `<div class="seg" title="${{esc(title)}}" style="left:${{left.toFixed(2)}}%;width:${{width.toFixed(2)}}%;background:${{color}}">${{esc(ev.state)}}</div>`;
         }}).join('');
-        rows += `<div class="agent-row"><div class="agent-name">${{esc(agent)}}</div><div class="track">${{segs}}</div></div>`;
+        const switches = trace.filter(ev => (ev.kind === 'app_launch' || ev.kind === 'app_resume') && ev.agent === agent).map(ev => {{
+          const left = Math.max(0, Number(ev.t || 0) / maxT * 100);
+          const label = ev.kind === 'app_launch' ? 'launch' : 'resume';
+          const title = `${{label}} @ ${{Number(ev.t || 0).toFixed(2)}}s\\n${{ev.package || ''}}`;
+          return `<div class="switch" data-label="${{esc(label)}}" title="${{esc(title)}}" style="left:${{left.toFixed(2)}}%"></div>`;
+        }}).join('');
+        rows += `<div class="agent-row"><div class="agent-name">${{esc(agent)}}</div><div class="track">${{segs}}${{switches}}</div></div>`;
       }}
       const legend = Object.entries(colors).map(([state, color]) => `<span class="chip"><i class="dot" style="background:${{color}}"></i>${{esc(state)}}</span>`).join('');
       return `<section class="section"><h2>Agent State Lanes</h2><div class="legend">${{legend}}</div><div class="lane">${{rows || '<p class="muted">No state events.</p>'}}</div></section>`;
@@ -267,7 +332,7 @@ def _html(data: str) -> str:
           <td class="summary">${{esc(ev.request_summary || ev.response_summary || '')}}</td>
           <td>${{link(ev.payload_ref || ev.evidence_ref)}}</td>
         </tr>`).join('');
-      return `<section class="section"><h2>IPC Ledger</h2><table><thead><tr><th>Status</th><th>Route</th><th>Via</th><th>Content</th><th>Evidence</th></tr></thead><tbody>${{rows || '<tr><td colspan="5" class="muted">No IPC events.</td></tr>'}}</tbody></table></section>`;
+      return `<section class="section"><h2>IPC Ledger</h2><table><colgroup><col style="width:12%"><col style="width:22%"><col style="width:10%"><col style="width:38%"><col style="width:18%"></colgroup><thead><tr><th>Status</th><th>Route</th><th>Via</th><th>Content</th><th>Evidence</th></tr></thead><tbody>${{rows || '<tr><td colspan="5" class="muted">No IPC events.</td></tr>'}}</tbody></table></section>`;
     }}
 
     function eventTable(trace, q) {{
@@ -275,7 +340,7 @@ def _html(data: str) -> str:
         const brief = eventBrief(ev);
         return `<tr><td>${{esc(ev.time || '')}}</td><td><code>${{esc(ev.kind)}}</code></td><td>${{esc(ev.agent || ev.source_agent || '')}}</td><td class="summary">${{esc(brief)}}</td><td><details><summary>raw</summary><pre>${{esc(JSON.stringify(ev, null, 2))}}</pre></details></td></tr>`;
       }}).join('');
-      return `<section class="section"><h2>Key Runtime Events</h2><table><thead><tr><th>Time</th><th>Kind</th><th>Agent</th><th>Summary</th><th>Raw</th></tr></thead><tbody>${{rows || '<tr><td colspan="5" class="muted">No matching events.</td></tr>'}}</tbody></table></section>`;
+      return `<section class="section"><h2>Key Runtime Events</h2><table><colgroup><col style="width:18%"><col style="width:18%"><col style="width:16%"><col style="width:34%"><col style="width:14%"></colgroup><thead><tr><th>Time</th><th>Kind</th><th>Agent</th><th>Summary</th><th>Raw</th></tr></thead><tbody>${{rows || '<tr><td colspan="5" class="muted">No matching events.</td></tr>'}}</tbody></table></section>`;
     }}
 
     function eventBrief(ev) {{
@@ -312,4 +377,3 @@ def _html(data: str) -> str:
 </body>
 </html>
 """
-

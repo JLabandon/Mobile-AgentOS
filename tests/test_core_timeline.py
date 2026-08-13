@@ -31,6 +31,16 @@ def test_timeline_contains_agents_states_and_ipc(tmp_path) -> None:
         + "\n",
         encoding="utf-8",
     )
+    (run_dir / "trace.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"time": "2026-08-13T10:00:00", "kind": "app_launch", "agent": "calendar_agent", "package": "com.google.android.calendar"}),
+                json.dumps({"time": "2026-08-13T10:00:02", "kind": "peer_result_delivered", "source_agent": "keep_agent", "target_agent": "calendar_agent"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     (run_dir / "metrics.json").write_text(json.dumps({"task": "calendar_gmail_meeting_detail", "runtime": "multidisplay_split_phase"}), encoding="utf-8")
 
     path = write_timeline(tmp_path, [run_dir])
@@ -41,3 +51,7 @@ def test_timeline_contains_agents_states_and_ipc(tmp_path) -> None:
     assert "Agent State Lanes" in html
     assert "IPC Ledger" in html
     assert "Key Runtime Events" in html
+    assert "class=\"switch\"" in html
+    assert "app_launch" in html
+    assert "table-layout: fixed" in html
+    assert "overflow-wrap: anywhere" in html

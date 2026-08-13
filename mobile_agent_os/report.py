@@ -32,6 +32,7 @@ class RunReporter:
     def event(self, kind: str, **payload: Any) -> None:
         item = {
             "time": datetime.now().isoformat(timespec="seconds"),
+            "t": round(time.monotonic() - self.started_monotonic, 3),
             "kind": kind,
             **payload,
         }
