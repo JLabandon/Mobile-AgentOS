@@ -5,6 +5,20 @@ from ..agents import AppConfig
 from ..report import RunReporter
 
 
+def _content_rows(stdout: str) -> list[str]:
+    return [line for line in stdout.splitlines() if line.startswith("Row:")]
+
+
+def _field_value(row: str, field: str) -> str | None:
+    marker = f"{field}="
+    if marker not in row:
+        return None
+    value = row.split(marker, 1)[1]
+    if ", " in value:
+        value = value.split(", ", 1)[0]
+    return value.strip()
+
+
 def clear_clock_alarms(adb: AdbClient, configs: dict[str, AppConfig], reporter: RunReporter) -> None:
     config = configs.get("clock")
     if not config:
@@ -35,21 +49,81 @@ def clear_calendar_events(adb: AdbClient, configs: dict[str, AppConfig], reporte
     except Exception as exc:
         reporter.event("preflight_calendar_clear_skip", reason=str(exc))
         return
-    proc = adb.shell(
+    calendars_proc = adb.shell(
         "content",
-        "delete",
+        "query",
         "--uri",
-        "content://com.android.calendar/events",
+        "content://com.android.calendar/calendars",
+        "--projection",
+        "_id:calendar_displayName:calendar_access_level:visible",
         "--where",
-        "1=1",
+        "'calendar_access_level>=500 AND visible=1'",
         timeout=20,
     )
+    calendar_rows = _content_rows(calendars_proc.stdout)
+    calendar_ids = [value for row in calendar_rows if (value := _field_value(row, "_id"))]
+    if not calendar_ids:
+        reporter.event(
+            "preflight_calendar_events_clear_skip",
+            package=package_name,
+            reason="no writable visible calendars found",
+            query_stdout=calendars_proc.stdout.strip(),
+            query_stderr=calendars_proc.stderr.strip(),
+        )
+        return
+    before_counts: dict[str, int] = {}
+    after_counts: dict[str, int] = {}
+    delete_results = []
+    for calendar_id in calendar_ids:
+        before = adb.shell(
+            "content",
+            "query",
+            "--uri",
+            "content://com.android.calendar/events",
+            "--projection",
+            "_id:title:calendar_id:deleted",
+            "--where",
+            f"'calendar_id={calendar_id} AND deleted=0'",
+            timeout=20,
+        )
+        before_counts[calendar_id] = len(_content_rows(before.stdout))
+        delete_proc = adb.shell(
+            "content",
+            "delete",
+            "--uri",
+            "content://com.android.calendar/events",
+            "--where",
+            f"'calendar_id={calendar_id}'",
+            timeout=20,
+        )
+        delete_results.append(
+            {
+                "calendar_id": calendar_id,
+                "returncode": delete_proc.returncode,
+                "stdout": delete_proc.stdout.strip(),
+                "stderr": delete_proc.stderr.strip(),
+            }
+        )
+        after = adb.shell(
+            "content",
+            "query",
+            "--uri",
+            "content://com.android.calendar/events",
+            "--projection",
+            "_id:title:calendar_id:deleted",
+            "--where",
+            f"'calendar_id={calendar_id} AND deleted=0'",
+            timeout=20,
+        )
+        after_counts[calendar_id] = len(_content_rows(after.stdout))
     reporter.event(
         "preflight_calendar_events_clear",
         package=package_name,
-        returncode=proc.returncode,
-        stdout=proc.stdout.strip(),
-        stderr=proc.stderr.strip(),
+        calendar_ids=calendar_ids,
+        before_counts=before_counts,
+        after_counts=after_counts,
+        verified=all(count == 0 for count in after_counts.values()),
+        delete_results=delete_results,
     )
 
 
