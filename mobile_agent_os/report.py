@@ -158,13 +158,19 @@ class RunReporter:
     def _agentos_metrics(self, elapsed: float) -> dict[str, Any]:
         intervals = self._state_intervals(default_end=elapsed)
         thinking = [item for item in intervals if item["state"] == "THINKING"]
-        active = [item for item in intervals if item["state"] in {"OBSERVING", "ACTING"}]
+        observing = [item for item in intervals if item["state"] == "OBSERVING"]
+        acting = [item for item in intervals if item["state"] == "ACTING"]
+        settling = [item for item in intervals if item["state"] == "SETTLING"]
+        active = [item for item in intervals if item["state"] in {"OBSERVING", "ACTING", "SETTLING"}]
         ready_to_act = [item for item in intervals if item["state"] == "READY_TO_ACT"]
         wait_resource = [item for item in intervals if item["state"] == "WAIT_RESOURCE"]
         switch = [item for item in intervals if item["state"] == "SWITCH"]
 
         llm_thinking_time = sum(item["end"] - item["start"] for item in thinking)
         parallel_thinking_overlap_time = self._parallel_state_overlap(thinking)
+        observe_overlap_time = self._parallel_state_overlap(observing)
+        action_overlap_time = self._parallel_state_overlap(acting)
+        settle_overlap_time = self._parallel_state_overlap(settling)
         ready_to_act_wait_time = sum(item["end"] - item["start"] for item in ready_to_act)
         resource_wait_time = sum(item["end"] - item["start"] for item in wait_resource)
         switch_time = sum(item["end"] - item["start"] for item in switch)
@@ -175,6 +181,10 @@ class RunReporter:
                     continue
                 overlap = min(think["end"], other["end"]) - max(think["start"], other["start"])
                 llm_overlap_time += max(0.0, overlap)
+        cross_stage_overlap_time = self._cross_stage_overlap(
+            thinking,
+            [*observing, *acting, *settling],
+        )
 
         display_occupancy: dict[str, float] = {}
         for item in active:
@@ -198,9 +208,14 @@ class RunReporter:
             "llm_thinking_time": round(llm_thinking_time, 3),
             "llm_overlap_time": round(llm_overlap_time, 3),
             "parallel_thinking_overlap_time": round(parallel_thinking_overlap_time, 3),
+            "observe_overlap_time": round(observe_overlap_time, 3),
+            "action_overlap_time": round(action_overlap_time, 3),
+            "settle_overlap_time": round(settle_overlap_time, 3),
+            "cross_stage_overlap_time": round(cross_stage_overlap_time, 3),
             "ready_to_act_wait_time": round(ready_to_act_wait_time, 3),
             "resource_wait_time": round(resource_wait_time, 3),
             "switch_time": round(switch_time, 3),
+            **self._job_counts(),
             "display_occupancy_by_slot": {key: round(value, 3) for key, value in sorted(display_occupancy.items())},
             "fast_guard_pass_count": guard_pass,
             "fast_guard_fail_count": guard_fail,
@@ -243,6 +258,38 @@ class RunReporter:
             previous = t_value
         return overlap
 
+    def _cross_stage_overlap(self, primary: list[dict[str, Any]], secondary: list[dict[str, Any]]) -> float:
+        overlap = 0.0
+        for first in primary:
+            for second in secondary:
+                if first["agent"] == second["agent"]:
+                    continue
+                overlap += max(0.0, min(first["end"], second["end"]) - max(first["start"], second["start"]))
+        return overlap
+
+    def _job_counts(self) -> dict[str, int]:
+        counts = {
+            "observation_jobs": 0,
+            "thinking_jobs": 0,
+            "action_jobs": 0,
+            "settle_jobs": 0,
+            "ipc_delivery_jobs": 0,
+        }
+        by_type = {
+            "ObservationJob": "observation_jobs",
+            "ThinkingJob": "thinking_jobs",
+            "ActionJob": "action_jobs",
+            "SettleWaitJob": "settle_jobs",
+            "IPCDeliveryJob": "ipc_delivery_jobs",
+        }
+        for event in self.events:
+            if event.get("kind") != "job_finish":
+                continue
+            key = by_type.get(str(event.get("job_type", "")))
+            if key:
+                counts[key] += 1
+        return counts
+
     def _state_intervals(self, *, default_end: float) -> list[dict[str, Any]]:
         by_agent: dict[str, list[dict[str, Any]]] = {}
         for event in self.state_events:
@@ -260,6 +307,7 @@ class RunReporter:
                         "start": start,
                         "end": max(start, end),
                         "display_id": event.get("display_id"),
+                        "job_type": event.get("job_type"),
                     }
                 )
         return intervals
@@ -352,6 +400,15 @@ class RunReporter:
             "llm_thinking_time",
             "llm_overlap_time",
             "parallel_thinking_overlap_time",
+            "observe_overlap_time",
+            "action_overlap_time",
+            "settle_overlap_time",
+            "cross_stage_overlap_time",
+            "observation_jobs",
+            "thinking_jobs",
+            "action_jobs",
+            "settle_jobs",
+            "ipc_delivery_jobs",
             "ready_to_act_wait_time",
             "resource_wait_time",
             "fast_guard_pass_count",

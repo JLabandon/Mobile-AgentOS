@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -61,10 +62,17 @@ class GeminiScreenClient:
         response = self.client.models.generate_content(model=self.model, contents=[prompt, image])
         return VlmScreenResult(text=response.text or "", model=self.model)
 
-    def decide_ui_action(self, *, screenshot_path: Path, agent_name: str, app_label: str, task_instruction: str, memory: str = "") -> dict[str, Any]:
-        image = self._types.Part.from_bytes(data=screenshot_path.read_bytes(), mime_type="image/png")
+    def build_action_prompt(
+        self,
+        *,
+        screenshot_path: Path,
+        agent_name: str,
+        app_label: str,
+        task_instruction: str,
+        memory: str = "",
+    ) -> str:
         width, height = Image.open(screenshot_path).size
-        prompt = (
+        return (
             "You control a mobile app using only primitive UI actions. "
             "Inspect the screenshot and return one JSON object only. "
             "Allowed actions: click, back, complete, fail. "
@@ -79,8 +87,22 @@ class GeminiScreenClient:
             f"Task: {task_instruction}\n"
             f"Memory/context: {memory or '<none>'}\n"
         )
+
+    def decide_ui_action(self, *, screenshot_path: Path, agent_name: str, app_label: str, task_instruction: str, memory: str = "") -> dict[str, Any]:
+        image = self._types.Part.from_bytes(data=screenshot_path.read_bytes(), mime_type="image/png")
+        prompt = self.build_action_prompt(
+            screenshot_path=screenshot_path,
+            agent_name=agent_name,
+            app_label=app_label,
+            task_instruction=task_instruction,
+            memory=memory,
+        )
         response = self.client.models.generate_content(model=self.model, contents=[prompt, image])
         return _parse_json_object(response.text or "")
+
+
+def prompt_hash(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

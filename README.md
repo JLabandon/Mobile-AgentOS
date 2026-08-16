@@ -6,27 +6,27 @@ The current project focus is **Mobile AgentOS**: a scheduler-driven runtime wher
 
 ## Current Architecture
 
-- `steward_serial`: MobileSteward-style baseline. The Steward plans app-level subtasks, runs them serially, and forwards upstream information to downstream agents.
-- `agentos_parallel`: Mobile AgentOS runtime. The Steward still performs upfront app-level planning, while the runtime owns scheduling, state transitions, resource records, IPC delivery, stale-action guards, and timeline output.
-- `mobilerun_steward_serial`: MobileRun-backed baseline. The runtime uses vendored MobileRun code for screenshot-based app operation, while the Steward still performs serial app scheduling and information forwarding.
-- `mobilerun_agentos_parallel`: MobileRun-backed AgentOS path. It shares task planning, traces, IPC ledger, and completion checks with the rest of the project, while MobileRun remains the app-operation backend.
-- `AppStaffAgent`: a shared app agent class. Each agent observes UI XML, sends the current UI and task context to the model, receives one JSON action, and executes only primitive UI actions.
+Mobile AgentOS currently has two layers of runtime work:
 
-AppAgents use the same action interface across apps:
+- Legacy XML/DeepSeek runtimes remain available for earlier benchmarks: `steward_serial` and `agentos_parallel`.
+- Stage 5 adds a VLM-backed job scheduler path: `job_level_steward_serial` and `job_level_agentos`.
+
+The Stage 5 path decomposes each app-agent loop into schedulable jobs:
 
 ```text
-click
-input
-swipe
-back
-FINISH
-REQUEST_INFORMATION
-RESPOND_INFORMATION
-REQUEST_OPERATION
-RESPOND_OPERATION
+ObservationJob -> ThinkingJob -> ActionJob -> SettleWaitJob -> IPCDeliveryJob
 ```
 
-The runtime code does not contain app-specific field adapters or semantic slot executors. App-specific knowledge belongs in app profiles, task fixtures, visible UI text, model prompts, and long-term memory.
+`job_level_steward_serial` uses the same executor and task config as AgentOS, while enforcing a configured serial order. `job_level_agentos` runs the FIFO scheduler with concurrent workers, dependency checks, structured IPC, resident app reuse, and traceable runtime state.
+
+The current scheduler is intentionally simple: FIFO, no priority, no preemption, and a lightweight resource capacity table. Complex resource arbitration and larger task suites are planned for Stage 6.
+
+Project documents:
+
+```text
+docs/08_stage5_report.md
+docs/09_stage6_plan.md
+```
 
 ## Benchmark Scope
 
@@ -58,16 +58,24 @@ config/apps.json
 
 ## Running
 
-Create a `.env` file with `DEEPSEEK_API_KEY`, or keep using the existing sibling `.env` from the older prototype directory.
+Create a `.env` file with `DEEPSEEK_API_KEY` for the legacy XML/DeepSeek path. The Stage 5 VLM path uses `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
+
+Legacy benchmark examples:
 
 ```bash
 ./run_mobile_agent_os.sh --runtime agentos_parallel --task calendar_gmail_meeting_detail
 ./run_mobile_agent_os.sh --runtime steward_serial --task calendar_gmail_meeting_detail
 ./run_mobile_agent_os.sh --runtimes steward_serial,agentos_parallel --task-suite curated_core
-./run_mobile_agent_os.sh --runtime mobilerun_steward_serial --task calendar_keep_info
 ```
 
-If no runtime is provided, the benchmark runner uses `agentos_parallel`.
+Stage 5 scheduler examples:
+
+```bash
+python -m mobile_agent_os.benchmark.run_job_level_demo --mode job_level_steward_serial --task shop_payment_authorization
+python -m mobile_agent_os.benchmark.run_job_level_demo --mode job_level_agentos --task shop_payment_authorization
+```
+
+If no runtime is provided to `run_mobile_agent_os.sh`, the legacy benchmark runner uses `agentos_parallel`.
 
 ## Outputs
 

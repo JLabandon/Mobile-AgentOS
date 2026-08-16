@@ -9,11 +9,16 @@ from datetime import datetime
 
 STATE_COLORS = {
     "READY": "#86a873",
+    "IDLE": "#eef1f4",
+    "SCHEDULING": "#7b8fa1",
+    "WAITING": "#c8d0d8",
     "OBSERVING": "#4f8fc0",
     "THINKING": "#d89a2b",
     "SWITCH": "#5f6368",
     "READY_TO_ACT": "#8b6fc6",
     "ACTING": "#c75c5c",
+    "SETTLING": "#b36b9f",
+    "IPC": "#2f8f83",
     "WAIT_PEER": "#5277d8",
     "WAIT_RESOURCE": "#b96b45",
     "DONE": "#3f9b59",
@@ -28,6 +33,8 @@ KEY_EVENTS = {
     "app_launch",
     "app_resume",
     "display_switch",
+    "display_switch_done",
+    "display_switch_skipped",
     "display_observe",
     "llm_submitted",
     "llm_completed",
@@ -35,6 +42,8 @@ KEY_EVENTS = {
     "action_guard",
     "peer_result_delivered",
     "agent_step",
+    "job_start",
+    "job_finish",
     "runtime_finish",
     "hidden_evaluation",
 }
@@ -285,7 +294,7 @@ def _html(data: str) -> str:
     }}
 
     function lanes(states, metrics) {{
-      const serial = metrics.runtime === 'steward_serial';
+      const serial = metrics.runtime === 'steward_serial' || metrics.runtime === 'job_level_steward_serial';
       const laneStates = serial ? stewardSerialLane(states) : states;
       const byAgent = new Map();
       let maxT = 1;
@@ -295,24 +304,32 @@ def _html(data: str) -> str:
         maxT = Math.max(maxT, Number(ev.t || 0));
       }}
       let rows = '';
-      for (const [agent, events] of [...byAgent.entries()].sort()) {{
+      for (const [agent, events] of [...byAgent.entries()].sort(([a], [b]) => laneRank(a) - laneRank(b) || String(a).localeCompare(String(b)))) {{
         events.sort((a,b) => Number(a.t || 0) - Number(b.t || 0));
         const segs = events.map((ev, i) => {{
           const start = Number(ev.t || 0);
           const end = i + 1 < events.length ? Number(events[i + 1].t || maxT) : maxT;
           const left = Math.max(0, start / maxT * 100);
-          const width = Math.max(0.6, (Math.max(start, end) - start) / maxT * 100);
+          const rawWidth = (Math.max(start, end) - start) / maxT * 100;
+          const width = Math.max(0.6, rawWidth);
           const color = colors[ev.state] || '#c7c7c7';
           const title = `${{ev.state}} ${{start.toFixed(2)}}s-${{end.toFixed(2)}}s\\n${{JSON.stringify(ev, null, 2)}}`;
           const agentColor = ev.agent_color ? `--agent-color:${{ev.agent_color}};` : '';
           const cls = ev.agent_color ? 'seg agent-coded' : 'seg';
-          return `<div class="${{cls}}" title="${{esc(title)}}" style="left:${{left.toFixed(2)}}%;width:${{width.toFixed(2)}}%;background:${{color}};${{agentColor}}">${{esc(ev.label || ev.state)}}</div>`;
+          const label = rawWidth >= 5 ? esc(ev.label || ev.state) : '';
+          return `<div class="${{cls}}" title="${{esc(title)}}" style="left:${{left.toFixed(2)}}%;width:${{width.toFixed(2)}}%;background:${{color}};${{agentColor}}">${{label}}</div>`;
         }}).join('');
         rows += `<div class="agent-row"><div class="agent-name">${{esc(agent)}}</div><div class="track">${{segs}}</div></div>`;
       }}
       const legend = Object.entries(colors).map(([state, color]) => `<span class="chip"><i class="dot" style="background:${{color}}"></i>${{esc(state)}}</span>`).join('');
       const agentLegend = serial ? stewardAgentLegend(laneStates) : '';
       return `<section class="section"><h2>Agent State Lanes</h2><div class="legend">${{legend}}</div><div class="lane">${{rows || '<p class="muted">No state events.</p>'}}${{agentLegend}}</div></section>`;
+    }}
+
+    function laneRank(agent) {{
+      if (agent === 'runtime') return 0;
+      if (agent === 'Steward Serial') return 1;
+      return 2;
     }}
 
     function stewardSerialLane(states) {{
@@ -388,6 +405,8 @@ def _html(data: str) -> str:
       if (ev.kind === 'steward_plan') return ev.message || '';
       if (ev.kind === 'app_launch' || ev.kind === 'app_resume') return `${{ev.package || ''}} foreground=${{ev.foreground || ''}}`;
       if (ev.kind === 'display_switch') return `${{ev.agent || ''}} ${{ev.purpose || ''}} display=${{ev.display_id ?? ''}} elapsed=${{ev.elapsed ?? ''}}s`;
+      if (ev.kind === 'display_switch_done') return `${{ev.agent || ''}} display=${{ev.display_id ?? ''}} elapsed=${{ev.elapsed ?? ''}}s`;
+      if (ev.kind === 'display_switch_skipped') return `${{ev.agent || ''}} display=${{ev.display_id ?? ''}} ${{ev.reason || ''}}`;
       if (ev.kind === 'display_observe') return `display=${{ev.display_id}} package=${{(ev.observed_packages || []).join(',')}}`;
       if (ev.kind === 'model_call') return `step=${{ev.step}}`;
       if (ev.kind === 'action_guard') return `${{ev.result}} mode=${{ev.mode}} age=${{ev.snapshot_age_ms}}ms`;
