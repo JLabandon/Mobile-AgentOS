@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -20,6 +21,8 @@ from ..resources import (
 )
 from ..runtime_requests import RuntimeInformationRequest
 from ..runtime_requests import RuntimeInformationResponse
+from ..runtime_requests import RuntimeOperationRequest
+from ..runtime_requests import RuntimeOperationResponse
 from ..snapshots import ObservationSnapshot, PendingAction, PendingDecision, SnapshotStore, stable_digest
 from ..steward import StewardAgent
 from ..task_plan import InformationFlow, TaskPlan
@@ -34,12 +37,29 @@ class SplitPhaseAgent(DisplayBackedAgent, Protocol):
     def decide_from_snapshot(self, snapshot: ObservationSnapshot, subtask: SubTask, out_dir: Path) -> AgentAction:
         ...
 
+    def answer_information_from_snapshot(
+        self,
+        request: RuntimeInformationRequest,
+        snapshot: ObservationSnapshot,
+        out_dir: Path,
+    ) -> RuntimeInformationResponse:
+        ...
+
     def receive_information(self, response: object) -> None:
         ...
 
+    def receive_operation(self, response: object) -> None:
+        ...
 
-class MultidisplaySplitPhaseRuntime:
-    name = "multidisplay_split_phase"
+    def handle_information_request(self, request: RuntimeInformationRequest, out_dir: Path, *, record_ipc: bool = True) -> RuntimeInformationResponse:
+        ...
+
+    def handle_operation_request(self, request: RuntimeOperationRequest, out_dir: Path, *, record_ipc: bool = True) -> RuntimeOperationResponse:
+        ...
+
+
+class AgentOSParallelRuntime:
+    name = "agentos_parallel"
 
     def __init__(
         self,
@@ -70,6 +90,7 @@ class MultidisplaySplitPhaseRuntime:
         self._decision_by_agent: dict[str, PendingDecision] = {}
         self._snapshot_by_agent: dict[str, ObservationSnapshot] = {}
         self._pending_action_by_agent: dict[str, PendingAction] = {}
+        self._action_count_by_agent: dict[str, int] = {}
         self._delivered_edges: set[tuple[str, str]] = set()
         self._last_scheduler_signature: tuple[object, ...] | None = None
         self._last_scheduler_trace_at = 0.0
@@ -79,7 +100,7 @@ class MultidisplaySplitPhaseRuntime:
     def run(self, task: str, run_dir: Path) -> bool:
         if task not in self.task_plans:
             raise ValueError(f"unsupported task: {task}")
-        self.reporter.event("runtime_start", runtime=self.name, task=task, mode="multidisplay_split_phase")
+        self.reporter.event("runtime_start", runtime=self.name, task=task, mode="agentos_parallel")
         plan = self._plan(task)
         self.last_plan = plan
         active = {subtask.agent_name: subtask for subtask in plan.subtasks}
@@ -88,6 +109,7 @@ class MultidisplaySplitPhaseRuntime:
 
         for agent_name, subtask in active.items():
             agent = self.agents[agent_name]
+            self._action_count_by_agent[agent.name] = 0
             package = agent.display_package()
             slot = self.display_manager.allocate(agent.name, package)
             if slot.observation_channel != "foreground_uiautomator":
@@ -111,7 +133,7 @@ class MultidisplaySplitPhaseRuntime:
                 failed.update(self._collect_completed_decisions())
                 self._trace_scheduler_tick(tick)
 
-                progressed = self._run_one_ready_action(run_dir, finished, failed)
+                progressed = self._run_one_ready_action(active, run_dir, finished, failed)
                 if self._deliver_finished_edge_results(plan, finished):
                     progressed = True
                 if failed:
@@ -123,7 +145,7 @@ class MultidisplaySplitPhaseRuntime:
                 if progressed:
                     continue
 
-                if self._start_one_observe_and_think(active, finished, plan):
+                if self._start_ready_observe_and_think(active, finished, plan):
                     continue
 
                 if self._future_by_agent:
@@ -140,6 +162,24 @@ class MultidisplaySplitPhaseRuntime:
 
         self.reporter.event("runtime_finish", runtime=self.name, task=task, success=False, reason="scheduler deadline reached")
         return False
+
+    def _start_ready_observe_and_think(self, active: dict[str, SubTask], finished: set[str], plan: TaskPlan) -> bool:
+        started_agents: list[str] = []
+        shared_foreground = self._shared_foreground_observation()
+        while self._start_one_observe_and_think(active, finished, plan):
+            agent_name = next(reversed(self._future_by_agent))
+            if agent_name not in started_agents:
+                started_agents.append(agent_name)
+            if shared_foreground:
+                break
+        if len(started_agents) > 1:
+            self.reporter.event(
+                "parallel_thinking_batch_submitted",
+                runtime=self.name,
+                agents=started_agents,
+                count=len(started_agents),
+            )
+        return bool(started_agents)
 
     def _plan(self, task: str) -> TaskPlan:
         configured = self.task_plans[task]
@@ -160,6 +200,7 @@ class MultidisplaySplitPhaseRuntime:
             and self._states.get(f"{name}_agent") == "READY"
             and f"{name}_agent" not in self._future_by_agent
             and f"{name}_agent" not in self._pending_action_by_agent
+            and self._action_count_by_agent.get(f"{name}_agent", 0) < active[name].max_steps
         ]
         if not candidates:
             return False
@@ -169,9 +210,10 @@ class MultidisplaySplitPhaseRuntime:
         slot = self.display_manager.slot_for_agent(agent.name)
         observe_resource = display_observation_resource(slot.display_id)
         self.resources.acquire(agent.name, [observe_resource], reason="observe")
-        self._set_state(agent.name, "OBSERVING", display_id=slot.display_id)
         try:
-            snapshot = self.display_manager.observe(agent)
+            self._switch_display(agent, purpose="observe", display_id=slot.display_id)
+            self._set_state(agent.name, "OBSERVING", display_id=slot.display_id)
+            snapshot = self.display_manager.capture_observation(agent)
             self.snapshots.put(snapshot)
             self._snapshot_by_agent[agent.name] = snapshot
             self.reporter.event(
@@ -179,10 +221,20 @@ class MultidisplaySplitPhaseRuntime:
                 runtime=self.name,
                 agent=agent.name,
                 snapshot_id=snapshot.snapshot_id,
+                requested_display_id=slot.display_id,
                 display_id=snapshot.display_id,
                 app_package=snapshot.app_package,
                 ui_text_digest=snapshot.ui_text_digest,
             )
+            if snapshot.display_id != slot.display_id:
+                self.reporter.event(
+                    "observation_surface_remapped",
+                    runtime=self.name,
+                    agent=agent.name,
+                    requested_display_id=slot.display_id,
+                    actual_display_id=snapshot.display_id,
+                    app_package=snapshot.app_package,
+                )
         finally:
             self.resources.release_agent(agent.name, reason="observe_complete")
 
@@ -206,6 +258,7 @@ class MultidisplaySplitPhaseRuntime:
             decision_id=decision.decision_id,
             snapshot_id=snapshot.snapshot_id,
             display_id=slot.display_id,
+            actual_display_id=snapshot.display_id,
         )
         return True
 
@@ -276,7 +329,7 @@ class MultidisplaySplitPhaseRuntime:
             del self._future_by_agent[agent_name]
         return failed_agents
 
-    def _run_one_ready_action(self, run_dir: Path, finished: set[str], failed: set[str]) -> bool:
+    def _run_one_ready_action(self, active: dict[str, SubTask], run_dir: Path, finished: set[str], failed: set[str]) -> bool:
         ready = sorted(self._pending_action_by_agent)
         if not ready:
             return False
@@ -284,6 +337,20 @@ class MultidisplaySplitPhaseRuntime:
         pending = self._pending_action_by_agent[agent_name]
         agent_key = agent_name.removesuffix("_agent")
         agent = self.agents[agent_key]
+        subtask = active[agent_key]
+        current_steps = self._action_count_by_agent.get(agent.name, 0)
+        if current_steps >= subtask.max_steps:
+            del self._pending_action_by_agent[agent_name]
+            failed.add(agent.name)
+            self._set_state(agent.name, "FAILED", message=f"max steps reached ({subtask.max_steps})")
+            self.reporter.event(
+                "agent_finish",
+                runtime=self.name,
+                agent=agent.name,
+                message=f"max steps reached ({subtask.max_steps})",
+                max_steps=subtask.max_steps,
+            )
+            return True
         slot = self.display_manager.slot_for_agent(agent.name)
         snapshot = self.snapshots.get(pending.snapshot_id)
         guard = self.guard.check(pending, snapshot, slot)
@@ -310,9 +377,10 @@ class MultidisplaySplitPhaseRuntime:
             self.reporter.event("resource_blocked", runtime=self.name, agent=agent.name, resources=resources, reason=reason)
             return False
         self.resources.acquire(agent.name, resources, reason=f"action:{pending.action.action}")
-        self._set_state(agent.name, "ACTING", display_id=slot.display_id, action=pending.action.action)
         try:
-            result = self.display_manager.input(agent, pending.action)
+            self._switch_display(agent, purpose="act", display_id=slot.display_id, action=pending.action.action)
+            self._set_state(agent.name, "ACTING", display_id=slot.display_id, action=pending.action.action)
+            result = self.display_manager.apply_input(agent, pending.action)
             self.reporter.event(
                 "agent_step",
                 runtime=self.name,
@@ -330,6 +398,7 @@ class MultidisplaySplitPhaseRuntime:
             self.resources.release_agent(agent.name, reason="action_complete")
             del self._pending_action_by_agent[agent_name]
 
+        self._action_count_by_agent[agent.name] = current_steps + 1
         if result.status == "finished" or pending.action.action == "FINISH":
             finished.add(agent.name)
             self._set_state(agent.name, "DONE")
@@ -347,9 +416,162 @@ class MultidisplaySplitPhaseRuntime:
             )
             self.reporter.event("runtime_request_created", runtime=self.name, request=request)
             self._set_state(agent.name, "WAIT_PEER", request_id=request.request_id)
+            response = self._resolve_information_request(request, finished)
+            if response.status != "success":
+                failed.add(agent.name)
+                self._set_state(agent.name, "FAILED", request_id=request.request_id, message=response.limitations or "runtime information request failed")
+            else:
+                agent.receive_information(response)
+                self._set_state(agent.name, "READY", request_id=request.request_id, from_agent=response.from_agent)
+        elif pending.action.action == "REQUEST_OPERATION":
+            request = RuntimeOperationRequest.create(
+                from_agent=agent.name,
+                to_agent=pending.action.to_agent or "",
+                operation=pending.action.operation or "",
+                context=pending.action.context or "",
+                purpose=pending.action.purpose or "",
+                expected_result=pending.action.expected_result or "",
+                resume_instruction=pending.action.resume_instruction or "",
+            )
+            self.reporter.event("runtime_operation_request_created", runtime=self.name, request=request)
+            self._set_state(agent.name, "WAIT_PEER", request_id=request.request_id)
+            response = self._resolve_operation_request(request, finished)
+            if response.status != "success":
+                failed.add(agent.name)
+                self._set_state(agent.name, "FAILED", request_id=request.request_id, message=response.limitations or "runtime operation request failed")
+            else:
+                agent.receive_operation(response)
+                self._set_state(agent.name, "READY", request_id=request.request_id, from_agent=response.from_agent)
         else:
-            self._set_state(agent.name, "READY")
+            if self._action_count_by_agent[agent.name] >= subtask.max_steps:
+                failed.add(agent.name)
+                self._set_state(agent.name, "FAILED", message=f"max steps reached ({subtask.max_steps})")
+                self.reporter.event(
+                    "agent_finish",
+                    runtime=self.name,
+                    agent=agent.name,
+                    message=f"max steps reached ({subtask.max_steps})",
+                    max_steps=subtask.max_steps,
+                )
+            else:
+                self._set_state(agent.name, "READY")
         return True
+
+    def _resolve_information_request(self, request: RuntimeInformationRequest, finished: set[str]) -> RuntimeInformationResponse:
+        self.reporter.event("runtime_request_routed", runtime=self.name, via="peer", request=request)
+        self.reporter.ipc_event(
+            request_id=request.request_id,
+            message_kind="RuntimeInformationRequest",
+            status="routed",
+            from_agent=request.from_agent,
+            to_agent=request.to_agent,
+            mode=self.name,
+            via="peer",
+            request_summary=request.need,
+            policy_decision="not_checked",
+        )
+        target_key = request.to_agent.removesuffix("_agent")
+        if target_key not in self.agents:
+            return RuntimeInformationResponse(
+                request_id=request.request_id,
+                from_agent=request.to_agent,
+                to_agent=request.from_agent,
+                status="failed",
+                information="",
+                source_app=request.to_agent,
+                confidence="low",
+                limitations=f"target agent not found: {request.to_agent}",
+            )
+        target_agent = self.agents[target_key]
+        response = target_agent.handle_information_request(request, self.reporter.run_dir, record_ipc=True)
+        self.reporter.event("runtime_response_delivered", runtime=self.name, via="peer", response=response)
+        self.reporter.ipc_event(
+            request_id=request.request_id,
+            message_kind="RuntimeInformationResponse",
+            status="delivered",
+            from_agent=response.from_agent,
+            to_agent=response.to_agent,
+            mode=self.name,
+            via="peer",
+            request_summary=request.need,
+            response_summary=response.information,
+            evidence=response.evidence,
+            policy_decision="not_checked",
+        )
+        if response.status == "success":
+            finished.add(target_agent.name)
+            self._set_state(target_agent.name, "DONE", request_id=request.request_id, action="request_handled")
+        return response
+
+    def _resolve_operation_request(self, request: RuntimeOperationRequest, finished: set[str]) -> RuntimeOperationResponse:
+        self.reporter.event("runtime_operation_request_routed", runtime=self.name, via="peer", request=request)
+        self.reporter.ipc_event(
+            request_id=request.request_id,
+            message_kind="RuntimeOperationRequest",
+            status="routed",
+            from_agent=request.from_agent,
+            to_agent=request.to_agent,
+            mode=self.name,
+            via="peer",
+            request_summary=request.operation,
+            policy_decision="not_checked",
+        )
+        target_key = request.to_agent.removesuffix("_agent")
+        if target_key not in self.agents:
+            return RuntimeOperationResponse(
+                request_id=request.request_id,
+                from_agent=request.to_agent,
+                to_agent=request.from_agent,
+                status="failed",
+                result="",
+                source_app=request.to_agent,
+                limitations=f"target agent not found: {request.to_agent}",
+            )
+        target_agent = self.agents[target_key]
+        response = target_agent.handle_operation_request(request, self.reporter.run_dir, record_ipc=True)
+        self.reporter.event("runtime_operation_response_delivered", runtime=self.name, via="peer", response=response)
+        self.reporter.ipc_event(
+            request_id=request.request_id,
+            message_kind="RuntimeOperationResponse",
+            status="delivered",
+            from_agent=response.from_agent,
+            to_agent=response.to_agent,
+            mode=self.name,
+            via="peer",
+            request_summary=request.operation,
+            response_summary=response.result,
+            evidence=response.evidence,
+            policy_decision="not_checked",
+        )
+        if response.status == "success":
+            finished.add(target_agent.name)
+            self._set_state(target_agent.name, "DONE", request_id=request.request_id, action="operation_handled")
+        return response
+
+    def _switch_display(self, agent: SplitPhaseAgent, *, purpose: str, display_id: int, action: str | None = None) -> None:
+        started = time.monotonic()
+        slot, switched = self.display_manager.activate_for_observation(agent) if purpose == "observe" else self.display_manager.activate_for_input(agent)
+        elapsed = round(time.monotonic() - started, 3)
+        if not switched:
+            return
+        self.reporter.state_event(
+            agent.name,
+            "SWITCH",
+            t=round(time.monotonic() - self.reporter.started_monotonic - elapsed, 3),
+            runtime=self.name,
+            display_id=display_id,
+            purpose=purpose,
+            action=action,
+        )
+        self.reporter.event(
+            "display_switch",
+            runtime=self.name,
+            agent=agent.name,
+            display_id=slot.display_id,
+            purpose=purpose,
+            action=action,
+            elapsed=elapsed,
+        )
 
     def _deliver_finished_edge_results(self, plan: TaskPlan, finished: set[str]) -> bool:
         delivered = False
@@ -364,28 +586,33 @@ class MultidisplaySplitPhaseRuntime:
             snapshot = self.snapshots.latest_for_agent(source_agent_name)
             if not snapshot or not snapshot.visible_text.strip():
                 continue
-            target_subtask = next((subtask for subtask in plan.subtasks if subtask.agent_name == flow.to_agent), None)
-            peer_payload = self._peer_result_summary(
-                source_agent_name,
-                snapshot,
-                target_instruction=target_subtask.instruction if target_subtask else "",
-                flow=flow,
-            )
             evidence_ref = str(self.reporter.run_dir / f"{source_agent_name}" / f"{snapshot.snapshot_id}_peer_evidence.txt")
             Path(evidence_ref).parent.mkdir(parents=True, exist_ok=True)
             Path(evidence_ref).write_text(self._bounded_snapshot_text(snapshot, max_items=60, max_chars=4000) + "\n", encoding="utf-8")
             request_id = f"planner_flow_{flow.name}_{flow.from_agent}_{flow.to_agent}"
-            response = RuntimeInformationResponse(
+            request = RuntimeInformationRequest(
                 request_id=request_id,
-                from_agent=source_agent_name,
-                to_agent=target_agent_name,
-                status="success",
-                information=peer_payload,
-                source_app=getattr(self.agents[flow.from_agent].config, "label", flow.from_agent),
-                confidence="medium",
-                evidence=peer_payload,
-                limitations="Delivered by AgentOS runtime from a completed peer agent snapshot along a planner edge.",
+                from_agent=target_agent_name,
+                to_agent=source_agent_name,
+                need=f"{flow.name}: {', '.join(flow.fields) or 'planner-declared information'}",
+                context=f"Planner-declared information flow from {flow.from_agent} to {flow.to_agent}.",
+                purpose="Provide information needed by the downstream app agent.",
+                resume_instruction="Use the returned information to continue the assigned app task.",
+                created_at=datetime.now().isoformat(timespec="seconds"),
             )
+            self.reporter.ipc_event(
+                request_id=request.request_id,
+                message_kind="RuntimeInformationRequest",
+                status="created",
+                from_agent=request.from_agent,
+                to_agent=request.to_agent,
+                mode=self.name,
+                via="peer",
+                request_summary=request.need,
+                evidence_ref=evidence_ref,
+                policy_decision="not_checked",
+            )
+            response = self.agents[flow.from_agent].answer_information_from_snapshot(request, snapshot, self.reporter.run_dir)
             self.reporter.event(
                 "peer_result_delivered",
                 runtime=self.name,
@@ -406,8 +633,9 @@ class MultidisplaySplitPhaseRuntime:
                 via="peer",
                 request_summary=f"{flow.name}: {', '.join(flow.fields) or 'planner-declared information'}",
                 response_summary=response.information,
-                evidence="Provider app finished and exposed relevant UI evidence.",
+                evidence=response.evidence,
                 evidence_ref=evidence_ref,
+                policy_decision="not_checked",
             )
             self.agents[flow.to_agent].receive_information(response)
             if self._states.get(target_agent_name) == "WAIT_PEER":
@@ -427,78 +655,6 @@ class MultidisplaySplitPhaseRuntime:
                 break
         text = "\n".join(values) or snapshot.visible_text
         return text[:max_chars]
-
-    def _peer_result_summary(
-        self,
-        source_agent_name: str,
-        snapshot: ObservationSnapshot,
-        *,
-        target_instruction: str = "",
-        flow: InformationFlow | None = None,
-    ) -> str:
-        visible_lines: list[str] = []
-        for event in reversed(self.reporter.events):
-            if event.get("agent") != source_agent_name:
-                continue
-            event_lines = [str(item).strip() for item in event.get("visible_texts", []) if str(item).strip()]
-            if event_lines:
-                visible_lines = event_lines
-                break
-        visible_lines = visible_lines or [line.strip() for line in self._bounded_snapshot_text(snapshot, max_items=30, max_chars=1600).splitlines() if line.strip()]
-        focused = self._select_relevant_lines(visible_lines, target_instruction, fields=flow.fields if flow else ())
-        if focused:
-            return "\n".join(focused)[:800]
-        for event in reversed(self.reporter.events):
-            if event.get("kind") != "agent_step" or event.get("agent") != source_agent_name:
-                continue
-            action = event.get("action")
-            if isinstance(action, dict):
-                for key in ("information", "result", "reason"):
-                    value = str(action.get(key) or "").strip()
-                    if value:
-                        return value[:500]
-            reason = str(event.get("reason") or "").strip()
-            if reason:
-                return reason[:500]
-        return self._bounded_snapshot_text(snapshot, max_items=8, max_chars=500)
-
-    def _select_relevant_lines(self, lines: list[str], target_instruction: str, *, fields: tuple[str, ...] = ()) -> list[str]:
-        instruction_tokens = {
-            token
-            for token in f"{target_instruction} {' '.join(fields)}".lower().replace("_", " ").split()
-            if len(token) >= 4
-        }
-        signal_words = {
-            "agenda",
-            "address",
-            "date",
-            "details",
-            "email",
-            "end",
-            "location",
-            "meeting",
-            "notes",
-            "place",
-            "start",
-            "subject",
-            "time",
-            "title",
-        }
-        scored: list[tuple[int, int, str]] = []
-        for index, line in enumerate(lines):
-            lowered = line.lower()
-            tokens = set(lowered.replace(":", " ").replace(",", " ").split())
-            score = len(tokens & signal_words) * 3 + len(tokens & instruction_tokens)
-            if score > 0:
-                scored.append((score, index, line))
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        selected: list[str] = []
-        for _, _, line in scored:
-            if line not in selected:
-                selected.append(line)
-            if len(selected) >= 6:
-                break
-        return selected
 
     def _plan_information_flows(self, plan: TaskPlan) -> tuple[InformationFlow, ...]:
         if plan.information_flows:

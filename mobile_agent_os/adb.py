@@ -240,6 +240,22 @@ class AdbClient:
             return infos
         return self._fallback_parse_display_devices(display_text, sf_by_name, task_by_display)
 
+    def package_display_ids(self) -> dict[str, list[int]]:
+        proc = self.shell("dumpsys", "activity", "activities", timeout=30)
+        result: dict[str, list[int]] = {}
+        current_display: int | None = None
+        for line in proc.stdout.splitlines():
+            display = re.search(r"Display #(\d+)", line)
+            if display:
+                current_display = int(display.group(1))
+                continue
+            package = re.search(r"packageName=([^\s]+)", line)
+            if package and current_display is not None:
+                result.setdefault(package.group(1), [])
+                if current_display not in result[package.group(1)]:
+                    result[package.group(1)].append(current_display)
+        return result
+
     def _parse_logical_displays(
         self,
         text: str,

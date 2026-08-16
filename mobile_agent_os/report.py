@@ -119,14 +119,12 @@ class RunReporter:
     def metrics(self, *, task: str, runtime: str, success: bool, run_error: str | None = None) -> dict[str, Any]:
         elapsed = round(time.monotonic() - self.started_monotonic, 3)
         model_calls = sum(1 for event in self.events if event.get("kind") == "model_call")
-        adb_actions = sum(
-            1
-            for event in self.events
-            if event.get("kind") == "agent_step" and event.get("status") not in {"finished", "waiting", "responded"}
-        )
+        adb_actions = sum(1 for event in self.events if self._is_ui_action_event(event))
+        adb_actions += sum(1 for event in self.state_events if self._is_ui_action_state(event))
         steward_turns = sum(1 for event in self.events if event.get("kind") in {"steward_plan", "runtime_request_routed", "runtime_response_delivered"} and event.get("via", "steward") == "steward")
         ipc_messages = len(self.ipc_events)
-        app_switches = sum(1 for event in self.events if event.get("kind") == "app_launch")
+        display_switches = [event for event in self.events if event.get("kind") == "display_switch"]
+        app_switches = len(display_switches) if display_switches else sum(1 for event in self.events if event.get("kind") in {"app_launch", "app_resume"})
         wait_peer_time = 0.0
         wait_started: dict[str, float] = {}
         for event in self.state_events:
@@ -137,7 +135,7 @@ class RunReporter:
                 wait_started[agent] = t_value
             elif agent in wait_started and state in {"READY", "RUNNING", "DONE", "FAILED"}:
                 wait_peer_time += max(0.0, t_value - wait_started.pop(agent))
-        stage3_metrics = self._stage3_metrics(elapsed)
+        agentos_metrics = self._agentos_metrics(elapsed)
         metrics = {
             "task": task,
             "runtime": runtime,
@@ -152,21 +150,24 @@ class RunReporter:
             "total_runtime_events": len(self.events) + len(self.state_events) + len(self.ipc_events),
             "run_error": run_error,
             "run_dir": str(self.run_dir),
-            **stage3_metrics,
+            **agentos_metrics,
         }
         self.metrics_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return metrics
 
-    def _stage3_metrics(self, elapsed: float) -> dict[str, Any]:
+    def _agentos_metrics(self, elapsed: float) -> dict[str, Any]:
         intervals = self._state_intervals(default_end=elapsed)
         thinking = [item for item in intervals if item["state"] == "THINKING"]
         active = [item for item in intervals if item["state"] in {"OBSERVING", "ACTING"}]
         ready_to_act = [item for item in intervals if item["state"] == "READY_TO_ACT"]
         wait_resource = [item for item in intervals if item["state"] == "WAIT_RESOURCE"]
+        switch = [item for item in intervals if item["state"] == "SWITCH"]
 
         llm_thinking_time = sum(item["end"] - item["start"] for item in thinking)
+        parallel_thinking_overlap_time = self._parallel_state_overlap(thinking)
         ready_to_act_wait_time = sum(item["end"] - item["start"] for item in ready_to_act)
         resource_wait_time = sum(item["end"] - item["start"] for item in wait_resource)
+        switch_time = sum(item["end"] - item["start"] for item in switch)
         llm_overlap_time = 0.0
         for think in thinking:
             for other in active:
@@ -196,8 +197,10 @@ class RunReporter:
         return {
             "llm_thinking_time": round(llm_thinking_time, 3),
             "llm_overlap_time": round(llm_overlap_time, 3),
+            "parallel_thinking_overlap_time": round(parallel_thinking_overlap_time, 3),
             "ready_to_act_wait_time": round(ready_to_act_wait_time, 3),
             "resource_wait_time": round(resource_wait_time, 3),
+            "switch_time": round(switch_time, 3),
             "display_occupancy_by_slot": {key: round(value, 3) for key, value in sorted(display_occupancy.items())},
             "fast_guard_pass_count": guard_pass,
             "fast_guard_fail_count": guard_fail,
@@ -206,6 +209,39 @@ class RunReporter:
             "display_targeted_action_success_rate": display_success_rate,
             "useful_parallel_progress_ratio": round(llm_overlap_time / elapsed, 3) if elapsed > 0 else 0.0,
         }
+
+    def _is_ui_action_event(self, event: dict[str, Any]) -> bool:
+        if event.get("kind") != "agent_step":
+            return False
+        action = event.get("action")
+        if not isinstance(action, dict):
+            return False
+        return action.get("action") in {"click", "input", "swipe", "back"}
+
+    def _is_ui_action_state(self, event: dict[str, Any]) -> bool:
+        if event.get("state") != "ACTING":
+            return False
+        return event.get("action") in {"click", "input", "swipe", "back"}
+
+    def _parallel_state_overlap(self, intervals: list[dict[str, Any]]) -> float:
+        points: list[tuple[float, int]] = []
+        for item in intervals:
+            start = float(item.get("start", 0.0))
+            end = float(item.get("end", start))
+            if end <= start:
+                continue
+            points.append((start, 1))
+            points.append((end, -1))
+        points.sort(key=lambda item: (item[0], -item[1]))
+        active = 0
+        previous: float | None = None
+        overlap = 0.0
+        for t_value, delta in points:
+            if previous is not None and active >= 2:
+                overlap += max(0.0, t_value - previous)
+            active += delta
+            previous = t_value
+        return overlap
 
     def _state_intervals(self, *, default_end: float) -> list[dict[str, Any]]:
         by_agent: dict[str, list[dict[str, Any]]] = {}
@@ -315,6 +351,7 @@ class RunReporter:
             "total_runtime_events",
             "llm_thinking_time",
             "llm_overlap_time",
+            "parallel_thinking_overlap_time",
             "ready_to_act_wait_time",
             "resource_wait_time",
             "fast_guard_pass_count",

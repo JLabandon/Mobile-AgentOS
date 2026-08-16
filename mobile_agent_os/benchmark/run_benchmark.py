@@ -8,15 +8,15 @@ from pathlib import Path
 
 from ..adb import AdbClient
 from ..agents import AppStaffAgent
-from ..display import ForegroundObservationDisplayManager
+from ..display import AndroidDisplayManager, ForegroundObservationDisplayManager
 from ..evaluator import record_hidden_evaluation
 from ..llm import DeepSeekClient
 from ..registry import AgentRegistry
 from ..report import RunReporter
-from ..runtimes import MultidisplaySplitPhaseRuntime, StewardSerialRuntime
+from ..runtimes import AgentOSParallelRuntime, MobileRunAgentOSRuntime, MobileRunStewardSerialRuntime, StewardSerialRuntime
 from ..visualization.timeline import write_timeline
 from .compare import write_comparison
-from .device_prep import prepare_device, reset_configured_app_data
+from .device_prep import prepare_device, record_provider_evidence, reset_configured_app_data
 from .environment import load_env_file, run_deepseek_smoke
 from .loaders import load_app_configs, load_task_plans
 
@@ -24,7 +24,9 @@ from .loaders import load_app_configs, load_task_plans
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_CLASSES = {
     "steward_serial": StewardSerialRuntime,
-    "multidisplay_split_phase": MultidisplaySplitPhaseRuntime,
+    "agentos_parallel": AgentOSParallelRuntime,
+    "mobilerun_steward_serial": MobileRunStewardSerialRuntime,
+    "mobilerun_agentos_parallel": MobileRunAgentOSRuntime,
 }
 
 
@@ -37,6 +39,7 @@ def run_once(
     run_root: Path,
     device: str | None,
     skip_api_smoke: bool,
+    display_backend: str,
 ) -> tuple[dict[str, object], Path]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = run_root / f"{task}_{runtime_name}_{timestamp}"
@@ -67,12 +70,34 @@ def run_once(
         registry = AgentRegistry(agents, configs)
         reporter.event("agent_registry", registry=registry.trace_payload())
         runtime_cls = RUNTIME_CLASSES[runtime_name]
-        if runtime_name == "multidisplay_split_phase":
-            runtime = runtime_cls(agents, reporter, task_plans, display_manager=ForegroundObservationDisplayManager(adb))
+        if runtime_name == "agentos_parallel":
+            if display_backend == "android":
+                android_display_manager = AndroidDisplayManager(adb)
+                reporter.event(
+                    "display_backend_selected",
+                    runtime=runtime_name,
+                    backend=display_backend,
+                    displays=[slot.__dict__ for slot in android_display_manager.list_slots()],
+                )
+                if len({slot.display_id for slot in android_display_manager.list_slots()}) <= 1:
+                    reporter.event(
+                        "display_backend_fallback_note",
+                        runtime=runtime_name,
+                        backend=display_backend,
+                        reason="only one Android display is currently available; virtual-display overlap cannot be demonstrated in this run",
+                    )
+                    display_manager = ForegroundObservationDisplayManager(adb)
+                else:
+                    display_manager = android_display_manager
+            else:
+                display_manager = ForegroundObservationDisplayManager(adb)
+                reporter.event("display_backend_selected", runtime=runtime_name, backend=display_backend)
+            runtime = runtime_cls(agents, reporter, task_plans, display_manager=display_manager)
         else:
             runtime = runtime_cls(agents, reporter, task_plans)
         runtime_success = runtime.run(task, run_dir)
         plan = runtime.last_plan or task_plans[task]
+        record_provider_evidence(adb, plan, reporter)
         hidden_result = record_hidden_evaluation(plan, reporter)
         success = runtime_success and hidden_result.passed
     except Exception as exc:
@@ -95,6 +120,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--apps-config", default=str(PROJECT_ROOT / "config" / "apps.json"))
     parser.add_argument("--runs-dir", default=str(PROJECT_ROOT / "runs"))
     parser.add_argument("--device", help="Optional adb serial. Defaults to ANDROID_SERIAL or first online device.")
+    parser.add_argument("--display-backend", choices=["foreground", "android"], default="foreground")
     parser.add_argument("--skip-api-smoke", action="store_true")
     parser.add_argument("--continue-on-failure", action="store_true", help="Run remaining tasks after a failed item.")
     return parser.parse_args(argv)
@@ -110,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.runtime:
         runtime_names = [args.runtime]
     else:
-        runtime_names = ["multidisplay_split_phase"]
+        runtime_names = ["agentos_parallel"]
     unknown = sorted(set(runtime_names) - set(RUNTIME_CLASSES))
     if unknown:
         raise ValueError(f"unknown runtimes: {unknown}")
@@ -133,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_root=run_root,
                 device=args.device,
                 skip_api_smoke=args.skip_api_smoke,
+                display_backend=args.display_backend,
             )
             metrics.append(item)
             run_dirs.append(run_dir)

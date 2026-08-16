@@ -136,7 +136,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task-suite", default="curated_core")
     parser.add_argument("--apps-config", default=str(PROJECT_ROOT / "config" / "apps.json"))
     parser.add_argument("--out-dir", default=str(PROJECT_ROOT / "runs" / f"planner_sanity_{datetime.now().strftime('%Y%m%d_%H%M%S')}"))
-    parser.add_argument("--modes", default="steward_serial,multidisplay_split_phase")
+    parser.add_argument("--modes", default="steward_serial,agentos_parallel")
     parser.add_argument("--tasks", help="Comma-separated task ids. Defaults to the whole suite.")
     return parser.parse_args(argv)
 

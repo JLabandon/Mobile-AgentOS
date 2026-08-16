@@ -11,6 +11,7 @@ STATE_COLORS = {
     "READY": "#86a873",
     "OBSERVING": "#4f8fc0",
     "THINKING": "#d89a2b",
+    "SWITCH": "#5f6368",
     "READY_TO_ACT": "#8b6fc6",
     "ACTING": "#c75c5c",
     "WAIT_PEER": "#5277d8",
@@ -22,8 +23,11 @@ STATE_COLORS = {
 KEY_EVENTS = {
     "steward_plan",
     "display_slot_allocated",
+    "display_screenshot_captured",
+    "observation_surface_remapped",
     "app_launch",
     "app_resume",
+    "display_switch",
     "display_observe",
     "llm_submitted",
     "llm_completed",
@@ -194,27 +198,22 @@ def _html(data: str) -> str:
       white-space: nowrap;
       border-right: 1px solid rgba(255,255,255,.65);
     }}
-    .switch {{
+    .seg.agent-coded::before {{
+      content: '';
       position: absolute;
-      top: -1px;
-      width: 2px;
-      height: 36px;
-      background: #111827;
-      box-shadow: 0 0 0 2px rgba(255,255,255,.9);
-      z-index: 1;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: var(--agent-color, #111827);
     }}
-    .switch::after {{
-      content: attr(data-label);
-      position: absolute;
-      top: -18px;
-      left: 4px;
-      color: #111827;
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      padding: 1px 4px;
-      font-size: 10px;
-      white-space: nowrap;
+    .agent-legend {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
     }}
     .legend {{
       display: flex;
@@ -268,7 +267,7 @@ def _html(data: str) -> str:
         return;
       }}
       const q = filter.value.trim().toLowerCase();
-      app.innerHTML = metrics(run.metrics) + lanes(run.states, run.trace) + ipcTable(run.ipc, q) + eventTable(run.trace, q);
+      app.innerHTML = metrics(run.metrics) + lanes(run.states, run.metrics) + ipcTable(run.ipc, q) + eventTable(run.trace, q);
     }}
 
     function metrics(m) {{
@@ -285,19 +284,15 @@ def _html(data: str) -> str:
       return `<div class="metrics">${{items.map(([k,v]) => `<div class="metric"><span>${{esc(k)}}</span><b>${{esc(v)}}</b></div>`).join('')}}</div>`;
     }}
 
-    function lanes(states, trace) {{
+    function lanes(states, metrics) {{
+      const serial = metrics.runtime === 'steward_serial';
+      const laneStates = serial ? stewardSerialLane(states) : states;
       const byAgent = new Map();
       let maxT = 1;
-      for (const ev of states) {{
+      for (const ev of laneStates) {{
         if (!byAgent.has(ev.agent)) byAgent.set(ev.agent, []);
         byAgent.get(ev.agent).push(ev);
         maxT = Math.max(maxT, Number(ev.t || 0));
-      }}
-      for (const ev of trace) {{
-        if ((ev.kind === 'app_launch' || ev.kind === 'app_resume') && ev.agent) {{
-          maxT = Math.max(maxT, Number(ev.t || 0));
-          if (!byAgent.has(ev.agent)) byAgent.set(ev.agent, []);
-        }}
       }}
       let rows = '';
       for (const [agent, events] of [...byAgent.entries()].sort()) {{
@@ -309,18 +304,64 @@ def _html(data: str) -> str:
           const width = Math.max(0.6, (Math.max(start, end) - start) / maxT * 100);
           const color = colors[ev.state] || '#c7c7c7';
           const title = `${{ev.state}} ${{start.toFixed(2)}}s-${{end.toFixed(2)}}s\\n${{JSON.stringify(ev, null, 2)}}`;
-          return `<div class="seg" title="${{esc(title)}}" style="left:${{left.toFixed(2)}}%;width:${{width.toFixed(2)}}%;background:${{color}}">${{esc(ev.state)}}</div>`;
+          const agentColor = ev.agent_color ? `--agent-color:${{ev.agent_color}};` : '';
+          const cls = ev.agent_color ? 'seg agent-coded' : 'seg';
+          return `<div class="${{cls}}" title="${{esc(title)}}" style="left:${{left.toFixed(2)}}%;width:${{width.toFixed(2)}}%;background:${{color}};${{agentColor}}">${{esc(ev.label || ev.state)}}</div>`;
         }}).join('');
-        const switches = trace.filter(ev => (ev.kind === 'app_launch' || ev.kind === 'app_resume') && ev.agent === agent).map(ev => {{
-          const left = Math.max(0, Number(ev.t || 0) / maxT * 100);
-          const label = ev.kind === 'app_launch' ? 'launch' : 'resume';
-          const title = `${{label}} @ ${{Number(ev.t || 0).toFixed(2)}}s\\n${{ev.package || ''}}`;
-          return `<div class="switch" data-label="${{esc(label)}}" title="${{esc(title)}}" style="left:${{left.toFixed(2)}}%"></div>`;
-        }}).join('');
-        rows += `<div class="agent-row"><div class="agent-name">${{esc(agent)}}</div><div class="track">${{segs}}${{switches}}</div></div>`;
+        rows += `<div class="agent-row"><div class="agent-name">${{esc(agent)}}</div><div class="track">${{segs}}</div></div>`;
       }}
       const legend = Object.entries(colors).map(([state, color]) => `<span class="chip"><i class="dot" style="background:${{color}}"></i>${{esc(state)}}</span>`).join('');
-      return `<section class="section"><h2>Agent State Lanes</h2><div class="legend">${{legend}}</div><div class="lane">${{rows || '<p class="muted">No state events.</p>'}}</div></section>`;
+      const agentLegend = serial ? stewardAgentLegend(laneStates) : '';
+      return `<section class="section"><h2>Agent State Lanes</h2><div class="legend">${{legend}}</div><div class="lane">${{rows || '<p class="muted">No state events.</p>'}}${{agentLegend}}</div></section>`;
+    }}
+
+    function stewardSerialLane(states) {{
+      const agentColors = stewardAgentColors(states);
+      return states
+        .filter(ev => ev.agent && ev.state)
+        .map(ev => {{
+          const shortAgent = String(ev.agent).replace(/_agent$/, '');
+          return {{
+            ...ev,
+            agent: 'Steward Serial',
+            label: shortState(ev.state),
+            source_agent: ev.agent,
+            source_agent_short: shortAgent,
+            agent_color: agentColors[ev.agent] || '#111827',
+          }};
+        }});
+    }}
+
+    function stewardAgentColors(states) {{
+      const palette = ['#174ea6', '#b06000', '#137333', '#9334e6', '#c5221f', '#00796b'];
+      const agents = [...new Set(states.map(ev => ev.agent).filter(Boolean))].sort();
+      return Object.fromEntries(agents.map((agent, idx) => [agent, palette[idx % palette.length]]));
+    }}
+
+    function stewardAgentLegend(states) {{
+      const items = [];
+      const seen = new Set();
+      for (const ev of states) {{
+        if (!ev.source_agent || seen.has(ev.source_agent)) continue;
+        seen.add(ev.source_agent);
+        items.push(`<span class="chip"><i class="dot" style="background:${{ev.agent_color}}"></i>${{esc(ev.source_agent_short || ev.source_agent)}}</span>`);
+      }}
+      return items.length ? `<div class="agent-legend">${{items.join('')}}</div>` : '';
+    }}
+
+    function shortState(state) {{
+      return {{
+        READY: 'RDY',
+        SWITCH: 'SW',
+        OBSERVING: 'OBS',
+        THINKING: 'THK',
+        READY_TO_ACT: 'RTA',
+        ACTING: 'ACT',
+        WAIT_PEER: 'WAIT',
+        WAIT_RESOURCE: 'WAIT',
+        DONE: 'DONE',
+        FAILED: 'FAIL',
+      }}[state] || state;
     }}
 
     function ipcTable(ipc, q) {{
@@ -346,6 +387,7 @@ def _html(data: str) -> str:
     function eventBrief(ev) {{
       if (ev.kind === 'steward_plan') return ev.message || '';
       if (ev.kind === 'app_launch' || ev.kind === 'app_resume') return `${{ev.package || ''}} foreground=${{ev.foreground || ''}}`;
+      if (ev.kind === 'display_switch') return `${{ev.agent || ''}} ${{ev.purpose || ''}} display=${{ev.display_id ?? ''}} elapsed=${{ev.elapsed ?? ''}}s`;
       if (ev.kind === 'display_observe') return `display=${{ev.display_id}} package=${{(ev.observed_packages || []).join(',')}}`;
       if (ev.kind === 'model_call') return `step=${{ev.step}}`;
       if (ev.kind === 'action_guard') return `${{ev.result}} mode=${{ev.mode}} age=${{ev.snapshot_age_ms}}ms`;

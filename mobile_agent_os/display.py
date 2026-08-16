@@ -32,7 +32,7 @@ class DisplayBackedAgent(Protocol):
     def display_package(self) -> str:
         ...
 
-    def activate_display_session(self, display_id: int) -> None:
+    def activate_display_session(self, display_id: int) -> bool:
         ...
 
     def observe_display(self, display_id: int) -> ObservationSnapshot:
@@ -68,11 +68,30 @@ class DisplayManager:
         raise KeyError(f"no display slot allocated for {agent}")
 
     def observe(self, agent: DisplayBackedAgent) -> ObservationSnapshot:
+        self.activate_for_observation(agent)
+        return self.capture_observation(agent)
+
+    def activate_for_observation(self, agent: DisplayBackedAgent) -> tuple[DisplaySlot, bool]:
         slot = self.slot_for_agent(agent.name)
-        agent.activate_display_session(slot.display_id)
+        switched = agent.activate_display_session(slot.display_id)
+        return slot, switched
+
+    def capture_observation(self, agent: DisplayBackedAgent) -> ObservationSnapshot:
+        slot = self.slot_for_agent(agent.name)
         return agent.observe_display(slot.display_id)
 
     def input(self, agent: DisplayBackedAgent, action: AgentAction) -> ActionResult:
+        self.activate_for_input(agent)
+        return self.apply_input(agent, action)
+
+    def activate_for_input(self, agent: DisplayBackedAgent) -> tuple[DisplaySlot, bool]:
+        slot = self.slot_for_agent(agent.name)
+        if not slot.input_supported:
+            raise RuntimeError(f"display {slot.display_id} does not support input")
+        switched = agent.activate_display_session(slot.display_id)
+        return slot, switched
+
+    def apply_input(self, agent: DisplayBackedAgent, action: AgentAction) -> ActionResult:
         slot = self.slot_for_agent(agent.name)
         if not slot.input_supported:
             return ActionResult(status="failed", message=f"display {slot.display_id} does not support input")
@@ -82,6 +101,7 @@ class DisplayManager:
 class AndroidDisplayManager(DisplayManager):
     def __init__(self, adb: AdbClient, *, include_display0: bool = True) -> None:
         self.adb = adb
+        self._actual_display_by_agent: dict[str, int] = {}
         displays = adb.list_displays()
         slots = [
             DisplaySlot(
@@ -99,9 +119,49 @@ class AndroidDisplayManager(DisplayManager):
         super().__init__(slots or [DisplaySlot(display_id=0)])
 
     def observe(self, agent: DisplayBackedAgent) -> ObservationSnapshot:
-        slot = self.slot_for_agent(agent.name)
-        agent.activate_display_session(slot.display_id)
-        return agent.observe_display(slot.display_id)
+        self.activate_for_observation(agent)
+        return self.capture_observation(agent)
+
+    def _actual_display_for_agent(self, agent: DisplayBackedAgent) -> int:
+        package = agent.display_package()
+        actual_display_ids = self.adb.package_display_ids().get(package, [])
+        requested = self.slot_for_agent(agent.name).display_id
+        if requested in actual_display_ids:
+            actual = requested
+        elif actual_display_ids:
+            actual = actual_display_ids[0]
+        else:
+            actual = requested
+        self._actual_display_by_agent[agent.name] = actual
+        return actual
+
+    def capture_observation(self, agent: DisplayBackedAgent) -> ObservationSnapshot:
+        actual_display = self._actual_display_for_agent(agent)
+        return agent.observe_display(actual_display)
+
+    def activate_for_input(self, agent: DisplayBackedAgent) -> tuple[DisplaySlot, bool]:
+        requested_slot = self.slot_for_agent(agent.name)
+        actual_display = self._actual_display_by_agent.get(agent.name, requested_slot.display_id)
+        if not requested_slot.input_supported:
+            raise RuntimeError(f"display {requested_slot.display_id} does not support input")
+        switched = agent.activate_display_session(actual_display)
+        return DisplaySlot(
+            display_id=actual_display,
+            owner_agent=requested_slot.owner_agent,
+            app_package=requested_slot.app_package,
+            observation_channel=requested_slot.observation_channel,
+            input_supported=requested_slot.input_supported,
+            screenshot_supported=requested_slot.screenshot_supported,
+            ui_dump_supported=requested_slot.ui_dump_supported,
+            status=requested_slot.status,
+        ), switched
+
+    def apply_input(self, agent: DisplayBackedAgent, action: AgentAction) -> ActionResult:
+        requested_slot = self.slot_for_agent(agent.name)
+        actual_display = self._actual_display_by_agent.get(agent.name, requested_slot.display_id)
+        if not requested_slot.input_supported:
+            return ActionResult(status="failed", message=f"display {requested_slot.display_id} does not support input")
+        return agent.apply_display_action(actual_display, action)
 
 
 class ForegroundObservationDisplayManager(DisplayManager):
@@ -146,9 +206,9 @@ class ForegroundObservationDisplayManager(DisplayManager):
         return [self.slot_for_agent(agent) for agent in sorted(self._packages_by_agent)]
 
     def observe(self, agent: DisplayBackedAgent) -> ObservationSnapshot:
-        agent.activate_display_session(0)
-        return agent.observe_display(0)
+        self.activate_for_observation(agent)
+        return self.capture_observation(agent)
 
     def input(self, agent: DisplayBackedAgent, action: AgentAction) -> ActionResult:
-        agent.activate_display_session(0)
-        return agent.apply_display_action(0, action)
+        self.activate_for_input(agent)
+        return self.apply_input(agent, action)

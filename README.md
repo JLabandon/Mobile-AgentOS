@@ -7,7 +7,9 @@ The current project focus is **Mobile AgentOS**: a scheduler-driven runtime wher
 ## Current Architecture
 
 - `steward_serial`: MobileSteward-style baseline. The Steward plans app-level subtasks, runs them serially, and forwards upstream information to downstream agents.
-- `multidisplay_split_phase`: Mobile AgentOS runtime. The Steward still performs upfront app-level planning, while the runtime owns scheduling, state transitions, resource records, IPC delivery, stale-action guards, and timeline output.
+- `agentos_parallel`: Mobile AgentOS runtime. The Steward still performs upfront app-level planning, while the runtime owns scheduling, state transitions, resource records, IPC delivery, stale-action guards, and timeline output.
+- `mobilerun_steward_serial`: MobileRun-backed baseline. The runtime uses vendored MobileRun code for screenshot-based app operation, while the Steward still performs serial app scheduling and information forwarding.
+- `mobilerun_agentos_parallel`: MobileRun-backed AgentOS path. It shares task planning, traces, IPC ledger, and completion checks with the rest of the project, while MobileRun remains the app-operation backend.
 - `AppStaffAgent`: a shared app agent class. Each agent observes UI XML, sends the current UI and task context to the model, receives one JSON action, and executes only primitive UI actions.
 
 AppAgents use the same action interface across apps:
@@ -59,12 +61,13 @@ config/apps.json
 Create a `.env` file with `DEEPSEEK_API_KEY`, or keep using the existing sibling `.env` from the older prototype directory.
 
 ```bash
-./run_mobile_agent_os.sh --runtime multidisplay_split_phase --task calendar_gmail_meeting_detail
+./run_mobile_agent_os.sh --runtime agentos_parallel --task calendar_gmail_meeting_detail
 ./run_mobile_agent_os.sh --runtime steward_serial --task calendar_gmail_meeting_detail
-./run_mobile_agent_os.sh --runtimes steward_serial,multidisplay_split_phase --task-suite curated_core
+./run_mobile_agent_os.sh --runtimes steward_serial,agentos_parallel --task-suite curated_core
+./run_mobile_agent_os.sh --runtime mobilerun_steward_serial --task calendar_keep_info
 ```
 
-If no runtime is provided, the benchmark runner uses `multidisplay_split_phase`.
+If no runtime is provided, the benchmark runner uses `agentos_parallel`.
 
 ## Outputs
 

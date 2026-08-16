@@ -10,6 +10,7 @@ def test_timeline_contains_agents_states_and_ipc(tmp_path) -> None:
         "\n".join(
             [
                 json.dumps({"t": 0, "agent": "calendar_agent", "state": "READY"}),
+                json.dumps({"t": 0.5, "agent": "calendar_agent", "state": "SWITCH"}),
                 json.dumps({"t": 1, "agent": "calendar_agent", "state": "WAIT_PEER"}),
                 json.dumps({"t": 2, "agent": "keep_agent", "state": "RUNNING"}),
                 json.dumps({"t": 3, "agent": "calendar_agent", "state": "DONE"}),
@@ -41,7 +42,7 @@ def test_timeline_contains_agents_states_and_ipc(tmp_path) -> None:
         + "\n",
         encoding="utf-8",
     )
-    (run_dir / "metrics.json").write_text(json.dumps({"task": "calendar_gmail_meeting_detail", "runtime": "multidisplay_split_phase"}), encoding="utf-8")
+    (run_dir / "metrics.json").write_text(json.dumps({"task": "calendar_gmail_meeting_detail", "runtime": "agentos_parallel"}), encoding="utf-8")
 
     path = write_timeline(tmp_path, [run_dir])
     html = path.read_text(encoding="utf-8")
@@ -51,7 +52,35 @@ def test_timeline_contains_agents_states_and_ipc(tmp_path) -> None:
     assert "Agent State Lanes" in html
     assert "IPC Ledger" in html
     assert "Key Runtime Events" in html
-    assert "class=\"switch\"" in html
-    assert "app_launch" in html
+    assert "SWITCH" in html
+    assert "class=\"switch\"" not in html
     assert "table-layout: fixed" in html
     assert "overflow-wrap: anywhere" in html
+
+
+def test_steward_serial_renders_as_one_lane(tmp_path) -> None:
+    run_dir = tmp_path / "steward"
+    run_dir.mkdir()
+    (run_dir / "state_timeline.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"t": 0, "agent": "gmail_agent", "state": "SWITCH"}),
+                json.dumps({"t": 1, "agent": "gmail_agent", "state": "THINKING"}),
+                json.dumps({"t": 2, "agent": "calendar_agent", "state": "SWITCH"}),
+                json.dumps({"t": 3, "agent": "calendar_agent", "state": "ACTING"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "ipc_ledger.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "trace.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "metrics.json").write_text(json.dumps({"task": "x", "runtime": "steward_serial"}), encoding="utf-8")
+
+    html = write_timeline(tmp_path, [run_dir]).read_text(encoding="utf-8")
+
+    assert "Steward Serial" in html
+    assert "stewardSerialLane" in html
+    assert "shortState(ev.state)" in html
+    assert "stewardAgentLegend" in html
+    assert "agent-coded" in html

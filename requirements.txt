@@ -1,2 +1,15 @@
 openai>=1.0.0
 pytest>=8.0.0
+async_adbutils
+google-genai==2.18.1
+llama-index==0.14.23
+llama-index-llms-google-genai==0.9.6
+llama-index-llms-openai==0.7.10
+llama-index-llms-openai-like==0.7.2
+llama-index-llms-ollama==0.10.1
+llama-index-llms-openrouter==0.5.1
+llama-index-workflows==2.23.1
+mobilerun-core-local==0.6.0
+mobilerun-sdk==5.1.0
+pillow>=10.0.0
+pydantic==2.13.4

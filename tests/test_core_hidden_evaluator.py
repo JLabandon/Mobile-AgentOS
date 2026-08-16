@@ -13,7 +13,7 @@ def test_hidden_evaluator_uses_final_visible_texts_by_agent(tmp_path) -> None:
     plan = TaskPlan(
         task_id="calendar_gmail",
         goal="Schedule an event from email.",
-        mode="multidisplay_split_phase",
+        mode="agentos_parallel",
         success_criteria={
             "visible_terms": ["Investor Check-in", "Googleplex", "roadmap"],
             "not_visible_at_finish": ["Save"],
@@ -33,7 +33,7 @@ def test_hidden_evaluator_reports_missing_terms(tmp_path) -> None:
     plan = TaskPlan(
         task_id="calendar_gmail",
         goal="Schedule an event from email.",
-        mode="multidisplay_split_phase",
+        mode="agentos_parallel",
         success_criteria={"visible_terms": ["Investor Check-in", "Googleplex"]},
     )
 
@@ -49,7 +49,7 @@ def test_hidden_evaluator_ignores_observe_only_texts(tmp_path) -> None:
     plan = TaskPlan(
         task_id="calendar_gmail",
         goal="Schedule an event from email.",
-        mode="multidisplay_split_phase",
+        mode="agentos_parallel",
         success_criteria={"visible_terms": ["Investor Check-in", "Googleplex"]},
     )
 

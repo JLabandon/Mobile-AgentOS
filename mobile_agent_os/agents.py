@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -83,10 +84,10 @@ class AppStaffAgent:
         self._step_index = 1
         self._step_launched = False
         self._step_done = False
-        self._recent_action_keys: list[tuple[str, int | None, str | None, str | None, str | None]] = []
-        self._stage3_nodes_by_snapshot: dict[str, list[Any]] = {}
-        self._stage3_step_dir_by_snapshot: dict[str, Path] = {}
-        self._stage3_latest_snapshot_id: str | None = None
+        self._recent_action_keys: list[tuple[str, str | None, str | None, str | None]] = []
+        self._agentos_nodes_by_snapshot: dict[str, list[Any]] = {}
+        self._agentos_step_dir_by_snapshot: dict[str, Path] = {}
+        self._agentos_latest_snapshot_id: str | None = None
 
     @property
     def name(self) -> str:
@@ -121,12 +122,12 @@ class AppStaffAgent:
         if foreground != self.package_name:
             raise AdbError(f"{self.name} launch did not bring expected app to foreground: expected={self.package_name}, foreground={foreground}")
 
-    def activate(self, subtask: SubTask | None = None) -> None:
+    def activate(self, subtask: SubTask | None = None) -> bool:
         if self.package_name is None:
             self.package_name = self.adb.pick_package(self.config.package_candidates)
         foreground = self.adb.foreground_package()
         if foreground == self.package_name:
-            return
+            return False
         self.reporter.event("app_activate", agent=self.name, package=self.package_name, foreground=foreground)
         if self.config.launch.get("mode") == "intent":
             self.adb.force_stop(self.package_name)
@@ -136,7 +137,7 @@ class AppStaffAgent:
         foreground = self.adb.foreground_package()
         if foreground == self.package_name:
             self.reporter.event("app_activate_complete", agent=self.name, package=self.package_name, foreground=foreground, method="profile")
-            return
+            return True
         self.reporter.event("app_activate_retry", agent=self.name, package=self.package_name, foreground=foreground, method="launcher_then_profile")
         self.adb.launch_package(self.package_name)
         self.adb.settle(1.5)
@@ -144,6 +145,7 @@ class AppStaffAgent:
         self.adb.settle(2.0)
         foreground = self.adb.foreground_package()
         self.reporter.event("app_activate_complete", agent=self.name, package=self.package_name, foreground=foreground, method="launcher_then_profile")
+        return True
 
     def _launch_once(self, subtask: SubTask | None = None) -> None:
         launch = self.config.launch
@@ -195,7 +197,7 @@ class AppStaffAgent:
         incoming_request: RuntimeInformationRequest | RuntimeOperationRequest | None = None,
     ) -> AgentAction:
         last_error: str | None = None
-        blocked_action_keys: list[tuple[str, int | None, str | None, str | None, str | None]] = []
+        blocked_action_keys: list[tuple[str, str | None, str | None, str | None]] = []
         for attempt in range(4):
             system = self.system_prompt()
             blocked_action_text = self._blocked_action_prompt(blocked_action_keys, nodes or [])
@@ -234,7 +236,7 @@ class AppStaffAgent:
                 )
                 result = self.llm.parse_json_content(raw_content)
                 action = AgentAction.from_json(result)
-                action_key = (action.action, action.target_id, action.target_text, action.text, action.direction)
+                action_key = self._action_key(action, nodes or [])
                 if action.action == "click":
                     node = find_node(nodes or [], target_id=action.target_id, target_text=action.target_text)
                     if node and node.editable:
@@ -247,7 +249,7 @@ class AppStaffAgent:
                         raise ActionError(
                             "input target already contains the requested text; choose a confirmation control or a different missing field"
                         )
-                if action.action in {"click", "input", "swipe", "back"} and action_key in self._recent_action_keys[-2:]:
+                if action.action in {"click", "input", "swipe", "back"} and action_key in self._recent_action_keys[-4:]:
                     if action_key not in blocked_action_keys:
                         blocked_action_keys.append(action_key)
                     raise ActionError("same primitive action was just tried and did not complete the task; choose a different visible UI node or a final confirmation control if appropriate")
@@ -278,13 +280,21 @@ class AppStaffAgent:
                 )
         raise ActionError(f"failed to obtain valid action after retry: {last_error}")
 
-    def _format_action_key(self, key: tuple[str, int | None, str | None, str | None, str | None]) -> str:
-        action, target_id, target_text, text, direction = key
+    def _action_key(self, action: AgentAction, nodes: list[Any]) -> tuple[str, str | None, str | None, str | None]:
+        target = action.target_text
+        if target is None and action.target_id is not None:
+            node = find_node(nodes, target_id=action.target_id)
+            if node:
+                target = node.label
+            else:
+                target = f"id:{action.target_id}"
+        return (action.action, target, action.text, action.direction)
+
+    def _format_action_key(self, key: tuple[str, str | None, str | None, str | None]) -> str:
+        action, target, text, direction = key
         parts = [f"action={action}"]
-        if target_id is not None:
-            parts.append(f"target_id={target_id}")
-        if target_text:
-            parts.append(f"target_text={target_text}")
+        if target:
+            parts.append(f"target={target}")
         if text:
             parts.append(f"text={text}")
         if direction:
@@ -304,7 +314,7 @@ class AppStaffAgent:
 
     def _blocked_action_prompt(
         self,
-        blocked_action_keys: list[tuple[str, int | None, str | None, str | None, str | None]],
+        blocked_action_keys: list[tuple[str, str | None, str | None, str | None]],
         nodes: list[Any],
     ) -> str:
         if not blocked_action_keys:
@@ -388,7 +398,7 @@ class AppStaffAgent:
             node = find_node(nodes, target_id=action.target_id, target_text=action.target_text)
             if not node:
                 raise AdbError(f"click target not found: {action.to_json()}")
-            x, y = node.bounds.center
+            x, y = getattr(node, "action_center", None) or node.bounds.center
             self.adb.tap(x, y)
             return f"tap:{x},{y}:{node.label}"
         if action.action == "input":
@@ -398,17 +408,17 @@ class AppStaffAgent:
                 node = find_node(nodes, editable_only=True)
             if not node:
                 raise AdbError(f"input target not found: {action.to_json()}")
-            x, y = node.bounds.center
+            x, y = getattr(node, "action_center", None) or node.bounds.center
             self.adb.tap(x, y)
             self.adb.settle(0.4)
             self.adb.replace_text(action.text or "")
             return f"input:{node.label}"
         raise ActionError(f"unhandled action: {action.action}")
 
-    def _record_recent_action(self, action: AgentAction) -> None:
+    def _record_recent_action(self, action: AgentAction, nodes: list[Any]) -> None:
         if action.action not in {"click", "input", "swipe", "back"}:
             return
-        self._recent_action_keys.append((action.action, action.target_id, action.target_text, action.text, action.direction))
+        self._recent_action_keys.append(self._action_key(action, nodes))
         self._recent_action_keys = self._recent_action_keys[-6:]
 
     def begin_task(self, subtask: SubTask, out_dir: Path) -> None:
@@ -418,9 +428,9 @@ class AppStaffAgent:
         self._step_launched = False
         self._step_done = False
         self._recent_action_keys = []
-        self._stage3_nodes_by_snapshot = {}
-        self._stage3_step_dir_by_snapshot = {}
-        self._stage3_latest_snapshot_id = None
+        self._agentos_nodes_by_snapshot = {}
+        self._agentos_step_dir_by_snapshot = {}
+        self._agentos_latest_snapshot_id = None
         self.reporter.event("agent_start", agent=self.name, message=subtask.instruction)
         self.reporter.state_event(self.name, "READY", task=subtask.instruction)
 
@@ -429,31 +439,47 @@ class AppStaffAgent:
             self.package_name = self.adb.pick_package(self.config.package_candidates)
         return self.package_name
 
-    def activate_display_session(self, display_id: int) -> None:
+    def activate_display_session(self, display_id: int) -> bool:
         if self._step_subtask is None:
             raise RuntimeError(f"{self.name} has no active task. Call begin_task first.")
         if self.package_name is None:
             self.package_name = self.adb.pick_package(self.config.package_candidates)
         if not self._step_launched:
-            self.launch(self._step_subtask)
+            if display_id == 0:
+                self.launch(self._step_subtask)
+            else:
+                self.adb.force_stop(self.package_name)
+                self.adb.launch_package_on_display(self.package_name, display_id)
+                self.adb.settle(2.0)
+                actual_displays = self.adb.package_display_ids().get(self.package_name, [])
+                self.reporter.event(
+                    "app_launch_on_display",
+                    agent=self.name,
+                    package=self.package_name,
+                    requested_display_id=display_id,
+                    actual_display_ids=actual_displays,
+                    matched=display_id in actual_displays,
+                )
             self._step_launched = True
-            return
+            return True
         if display_id == 0:
             foreground = self.adb.foreground_package()
             if foreground != self.package_name:
                 self.reporter.event("app_resume", agent=self.name, package=self.package_name, foreground=foreground, method="launcher")
                 self.adb.launch_package(self.package_name)
                 self.adb.settle(1.0)
-            return
+                return True
+            return False
         self.adb.launch_package_on_display(self.package_name, display_id)
         self.adb.settle(1.0)
+        return True
 
     def observe_display(self, display_id: int) -> ObservationSnapshot:
         if self._step_subtask is None or self._step_out_dir is None:
             raise RuntimeError(f"{self.name} has no active task. Call begin_task first.")
         if self.package_name is None:
             self.package_name = self.adb.pick_package(self.config.package_candidates)
-        step_dir = self._step_out_dir / self.name / f"stage3_step_{self._step_index:02d}" / f"display_{display_id}"
+        step_dir = self._step_out_dir / self.name / f"agentos_step_{self._step_index:02d}" / f"display_{display_id}"
         step_dir.mkdir(parents=True, exist_ok=True)
         self.adb.tap_display(display_id, 8, 8)
         self.adb.settle(0.8)
@@ -476,9 +502,9 @@ class AppStaffAgent:
             screenshot_path=screenshot_path,
             xml_path=xml_path,
         )
-        self._stage3_nodes_by_snapshot[snapshot.snapshot_id] = nodes
-        self._stage3_step_dir_by_snapshot[snapshot.snapshot_id] = step_dir
-        self._stage3_latest_snapshot_id = snapshot.snapshot_id
+        self._agentos_nodes_by_snapshot[snapshot.snapshot_id] = nodes
+        self._agentos_step_dir_by_snapshot[snapshot.snapshot_id] = step_dir
+        self._agentos_latest_snapshot_id = snapshot.snapshot_id
         self.reporter.event(
             "display_observe",
             agent=self.name,
@@ -493,8 +519,8 @@ class AppStaffAgent:
         return snapshot
 
     def decide_from_snapshot(self, snapshot: ObservationSnapshot, subtask: SubTask, out_dir: Path) -> AgentAction:
-        nodes = self._stage3_nodes_by_snapshot.get(snapshot.snapshot_id, [])
-        step_dir = self._stage3_step_dir_by_snapshot.get(snapshot.snapshot_id, out_dir / self.name / f"stage3_step_{self._step_index:02d}")
+        nodes = self._agentos_nodes_by_snapshot.get(snapshot.snapshot_id, [])
+        step_dir = self._agentos_step_dir_by_snapshot.get(snapshot.snapshot_id, out_dir / self.name / f"agentos_step_{self._step_index:02d}")
         return self.decide_action(
             subtask=subtask,
             step=self._step_index,
@@ -504,14 +530,104 @@ class AppStaffAgent:
             term_status_text=self.term_status_text(subtask, nodes),
         )
 
+    def answer_information_from_snapshot(
+        self,
+        request: RuntimeInformationRequest,
+        snapshot: ObservationSnapshot,
+        out_dir: Path,
+    ) -> RuntimeInformationResponse:
+        nodes = self._agentos_nodes_by_snapshot.get(snapshot.snapshot_id, [])
+        step_dir = self._agentos_step_dir_by_snapshot.get(snapshot.snapshot_id, out_dir / self.name / request.request_id)
+        subtask = SubTask(
+            agent_name=self.config.name,
+            instruction=(
+                "Answer the incoming RuntimeInformationRequest using the currently visible UI evidence from this app. "
+                "Do not navigate or manipulate the UI. Return RESPOND_INFORMATION now."
+            ),
+            max_steps=1,
+        )
+        last_error = ""
+        for attempt in range(3):
+            prompt_dir = step_dir / "response_synthesis"
+            prompt_dir.mkdir(parents=True, exist_ok=True)
+            system = self.system_prompt() + " For this response-synthesis step, the only valid action is RESPOND_INFORMATION."
+            user = self.user_prompt(
+                subtask=subtask,
+                step=1,
+                ui_text=snapshot.visible_text,
+                incoming_request=request,
+            )
+            user += "\nReturn RESPOND_INFORMATION only. Use visible UI evidence; do not infer unsupported facts."
+            if last_error:
+                user += f"\nPrevious error: {last_error}"
+            prompt_path = prompt_dir / f"llm_prompt_attempt_{attempt + 1}.json"
+            response_path = prompt_dir / f"llm_response_attempt_{attempt + 1}.txt"
+            prompt_path.write_text(json.dumps({"system": system, "user": user}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            try:
+                raw_content = self.llm.raw_chat(system=system, user=user)
+                response_path.write_text(raw_content, encoding="utf-8", errors="replace")
+                self.reporter.event(
+                    "model_call",
+                    agent=self.name,
+                    step="response_synthesis",
+                    attempt=attempt + 1,
+                    prompt=str(prompt_path),
+                    response=str(response_path),
+                    raw_response=raw_content,
+                )
+                action = AgentAction.from_json(self.llm.parse_json_content(raw_content))
+                if action.action != "RESPOND_INFORMATION":
+                    raise ActionError("planner-declared flow response synthesis must return RESPOND_INFORMATION")
+                response = RuntimeInformationResponse(
+                    request_id=request.request_id,
+                    from_agent=self.name,
+                    to_agent=request.from_agent,
+                    status="success" if action.status == "success" else "failed",
+                    information=action.information or "",
+                    source_app=self.config.label,
+                    confidence=action.confidence or "low",
+                    evidence=action.evidence or "",
+                    limitations=action.limitations or "",
+                )
+                self.reporter.event(
+                    "runtime_response_created",
+                    response=response,
+                    visible_texts=visible_texts(nodes, limit=120),
+                    synthesis="provider_agent_from_snapshot",
+                )
+                return response
+            except (LlmError, ActionError) as exc:
+                last_error = str(exc)
+                self.reporter.event(
+                    "model_retry",
+                    agent=self.name,
+                    step="response_synthesis",
+                    attempt=attempt + 1,
+                    message=last_error,
+                    prompt=str(prompt_path),
+                )
+        response = RuntimeInformationResponse(
+            request_id=request.request_id,
+            from_agent=self.name,
+            to_agent=request.from_agent,
+            status="failed",
+            information="",
+            source_app=self.config.label,
+            confidence="low",
+            evidence=snapshot.visible_text[:500],
+            limitations=f"No valid RESPOND_INFORMATION was produced: {last_error}",
+        )
+        self.reporter.event("runtime_response_created", response=response, synthesis="provider_agent_from_snapshot")
+        return response
+
     def apply_display_action(self, display_id: int, action: AgentAction) -> ActionResult:
         if self._step_subtask is None or self._step_out_dir is None:
             raise RuntimeError(f"{self.name} has no active task. Call begin_task first.")
-        snapshot = self._stage3_latest_snapshot_id or next(reversed(self._stage3_nodes_by_snapshot), "")
-        nodes = self._stage3_nodes_by_snapshot.get(snapshot, [])
+        snapshot = self._agentos_latest_snapshot_id or next(reversed(self._agentos_nodes_by_snapshot), "")
+        nodes = self._agentos_nodes_by_snapshot.get(snapshot, [])
         final_commit_action = is_final_confirmation_action(action, nodes)
         status = self.execute_display_action(display_id, action, nodes)
-        self._record_recent_action(action)
+        self._record_recent_action(action, nodes)
         self._step_index += 1
         if action.action == "FINISH":
             verified, message = self.verify_completion(self._step_subtask, nodes)
@@ -523,7 +639,7 @@ class AppStaffAgent:
         if status in {"waiting", "waiting_operation", "responded", "responded_operation"}:
             return ActionResult(status=status, message=status)
         self.adb.settle(1.2)
-        step_dir = self._step_out_dir / self.name / f"stage3_step_{self._step_index:02d}" / f"display_{display_id}"
+        step_dir = self._step_out_dir / self.name / f"agentos_step_{self._step_index:02d}" / f"display_{display_id}"
         auto_finished, message = self._auto_finish_if_complete(
             self._step_subtask,
             step_dir,
@@ -533,6 +649,10 @@ class AppStaffAgent:
         if auto_finished:
             self._step_done = True
             return ActionResult(status="finished", message=message)
+        self.session_memory.append(
+            f"Previous action {action.action} on this UI did not complete the task: {message}. "
+            f"{self.term_status_text(self._step_subtask, nodes).strip()} Choose a different visible control if the UI did not change."
+        )
         return ActionResult(status="ready", message=status)
 
     def execute_display_action(self, display_id: int, action: AgentAction, nodes: list[Any]) -> str:
@@ -556,7 +676,7 @@ class AppStaffAgent:
             node = find_node(nodes, target_id=action.target_id, target_text=action.target_text)
             if not node:
                 raise AdbError(f"click target not found: {action.to_json()}")
-            raw_x, raw_y = node.bounds.center
+            raw_x, raw_y = getattr(node, "action_center", None) or node.bounds.center
             x, y = self._map_node_point_to_display(display_id, raw_x, raw_y, nodes)
             self.adb.tap_display(display_id, x, y)
             return f"tap:{display_id}:{x},{y}:{node.label}"
@@ -567,7 +687,7 @@ class AppStaffAgent:
                 node = find_node(nodes, editable_only=True)
             if not node:
                 raise AdbError(f"input target not found: {action.to_json()}")
-            raw_x, raw_y = node.bounds.center
+            raw_x, raw_y = getattr(node, "action_center", None) or node.bounds.center
             x, y = self._map_node_point_to_display(display_id, raw_x, raw_y, nodes)
             self.adb.tap_display(display_id, x, y)
             self.adb.settle(0.4)
@@ -576,6 +696,8 @@ class AppStaffAgent:
         raise ActionError(f"unhandled action: {action.action}")
 
     def _map_node_point_to_display(self, display_id: int, x: int, y: int, nodes: list[Any]) -> tuple[int, int]:
+        if display_id == 0:
+            return x, y
         display_size = self.adb.display_size(display_id)
         if not display_size:
             return x, y
@@ -651,7 +773,7 @@ class AppStaffAgent:
             )
             final_commit_action = is_final_confirmation_action(action, nodes)
             status = self.execute_action(action, nodes)
-            self._record_recent_action(action)
+            self._record_recent_action(action, nodes)
             self.reporter.event(
                 "agent_step",
                 agent=self.name,
@@ -790,8 +912,9 @@ class AppStaffAgent:
         )
         return verified, verify_message
 
-    def _observe_step(self, step_dir: Path, subtask: SubTask) -> tuple[Path, Path, list[Any]]:
-        self.activate(subtask)
+    def _observe_step(self, step_dir: Path, subtask: SubTask, *, activate: bool = True) -> tuple[Path, Path, list[Any]]:
+        if activate:
+            self.activate(subtask)
         try:
             xml_path = self.adb.dump_ui(step_dir / "window_dump.xml")
         except AdbError as exc:
@@ -805,17 +928,33 @@ class AppStaffAgent:
         nodes = parse_ui_xml(xml_path)
         return xml_path, screenshot_path, nodes
 
+    def _record_serial_switch(self, *, switched: bool, started: float, purpose: str, step: int, action: str | None = None) -> None:
+        if not switched:
+            return
+        elapsed = round(time.monotonic() - started, 3)
+        switch_t = round(time.monotonic() - self.reporter.started_monotonic - elapsed, 3)
+        self.reporter.state_event(self.name, "SWITCH", t=switch_t, runtime="steward_serial", display_id=0, purpose=purpose, step=step, action=action)
+        self.reporter.event("display_switch", runtime="steward_serial", agent=self.name, display_id=0, purpose=purpose, step=step, action=action, elapsed=elapsed)
+
     def run(self, subtask: SubTask, out_dir: Path) -> AgentRunResult:
         self.reporter.event("agent_start", agent=self.name, message=subtask.instruction)
         self._recent_action_keys = []
+        self.reporter.state_event(self.name, "READY", runtime="steward_serial", task=subtask.instruction)
+        started = time.monotonic()
         self.launch(subtask)
+        self._record_serial_switch(switched=True, started=started, purpose="launch", step=0)
         for step in range(1, subtask.max_steps + 1):
             step_dir = out_dir / self.name / f"step_{step:02d}"
             try:
-                xml_path, screenshot_path, nodes = self._observe_step(step_dir, subtask)
+                started = time.monotonic()
+                switched = self.activate(subtask)
+                self._record_serial_switch(switched=switched, started=started, purpose="observe", step=step)
+                self.reporter.state_event(self.name, "OBSERVING", runtime="steward_serial", step=step, display_id=0)
+                xml_path, screenshot_path, nodes = self._observe_step(step_dir, subtask, activate=False)
             except Exception as exc:
                 self.reporter.event("agent_step", agent=self.name, step=step, action=None, status="failed", reason=str(exc))
                 self.reporter.event("agent_finish", agent=self.name, message=f"failed: {exc}")
+                self.reporter.state_event(self.name, "FAILED", runtime="steward_serial", step=step, message=str(exc))
                 return AgentRunResult(status="failed", message=str(exc))
             ui_text = prompt_snapshot(nodes)
             (step_dir / "visible_texts.json").write_text(
@@ -823,6 +962,7 @@ class AppStaffAgent:
                 encoding="utf-8",
             )
             try:
+                self.reporter.state_event(self.name, "THINKING", runtime="steward_serial", step=step, display_id=0)
                 action = self.decide_action(
                     subtask=subtask,
                     step=step,
@@ -832,8 +972,12 @@ class AppStaffAgent:
                     term_status_text=self.term_status_text(subtask, nodes),
                 )
                 final_commit_action = is_final_confirmation_action(action, nodes)
+                started = time.monotonic()
+                switched = self.activate(subtask)
+                self._record_serial_switch(switched=switched, started=started, purpose="act", step=step, action=action.action)
+                self.reporter.state_event(self.name, "ACTING", runtime="steward_serial", step=step, display_id=0, action=action.action)
                 status = self.execute_action(action, nodes)
-                self._record_recent_action(action)
+                self._record_recent_action(action, nodes)
                 self.reporter.event(
                     "agent_step",
                     agent=self.name,
@@ -873,6 +1017,7 @@ class AppStaffAgent:
                         evidence_ref=str(xml_path),
                     )
                     self.session_memory.append(f"Paused for runtime request {request.request_id}: {request.need}")
+                    self.reporter.state_event(self.name, "WAIT_PEER", runtime="steward_serial", step=step, request_id=request.request_id)
                     return AgentRunResult(status="waiting", request=request, message=action.reason)
                 if action.action == "REQUEST_OPERATION":
                     request = RuntimeOperationRequest.create(
@@ -904,6 +1049,7 @@ class AppStaffAgent:
                         policy_decision="not_checked",
                     )
                     self.session_memory.append(f"Paused for runtime operation {request.request_id}: {request.operation}")
+                    self.reporter.state_event(self.name, "WAIT_PEER", runtime="steward_serial", step=step, request_id=request.request_id)
                     return AgentRunResult(status="waiting_operation", request=request, message=action.reason)
                 if action.action == "FINISH":
                     verified, verify_message = self.verify_completion(subtask, nodes)
@@ -921,8 +1067,10 @@ class AppStaffAgent:
                         self.remember_lesson(
                             f"When doing '{subtask.instruction[:120]}', do not finish until completion check passes: {verify_message}"
                         )
+                        self.reporter.state_event(self.name, "READY", runtime="steward_serial", step=step, message=verify_message)
                         continue
                     self.reporter.event("agent_finish", agent=self.name, message="finished")
+                    self.reporter.state_event(self.name, "DONE", runtime="steward_serial", step=step)
                     return AgentRunResult(status="finished")
                 self.adb.settle(1.2)
                 auto_finished, verify_message = self._auto_finish_if_complete(
@@ -933,7 +1081,9 @@ class AppStaffAgent:
                 )
                 if auto_finished:
                     self.reporter.event("agent_finish", agent=self.name, message="finished after post-action verification")
+                    self.reporter.state_event(self.name, "DONE", runtime="steward_serial", step=step, action="post_action_verification")
                     return AgentRunResult(status="finished", message=verify_message)
+                self.reporter.state_event(self.name, "READY", runtime="steward_serial", step=step, action=action.action)
             except Exception as exc:
                 self.reporter.event(
                     "agent_step",
@@ -947,9 +1097,11 @@ class AppStaffAgent:
                     visible_texts=visible_texts(nodes, limit=120),
                 )
                 self.reporter.event("agent_finish", agent=self.name, message=f"failed: {exc}")
+                self.reporter.state_event(self.name, "FAILED", runtime="steward_serial", step=step, message=str(exc))
                 self.remember_lesson(f"Action failed in {self.config.label}: {exc}")
                 return AgentRunResult(status="failed", message=str(exc))
         self.reporter.event("agent_finish", agent=self.name, message="max steps reached")
+        self.reporter.state_event(self.name, "FAILED", runtime="steward_serial", message="max steps reached")
         self.remember_lesson(f"When doing '{subtask.instruction[:120]}', avoid repeating ineffective actions; max steps were reached.")
         return AgentRunResult(status="failed", message="max steps reached")
 
@@ -999,20 +1151,19 @@ class AppStaffAgent:
         request_dir = out_dir / self.name / request.request_id
         for step in range(1, subtask.max_steps + 1):
             step_dir = request_dir / f"step_{step:02d}"
-            xml_path = self.adb.dump_ui(step_dir / "window_dump.xml")
-            screenshot_path = self.adb.screenshot(step_dir / "screenshot.png")
-            nodes = parse_ui_xml(xml_path)
-            ui_text = prompt_snapshot(nodes)
             try:
+                xml_path, screenshot_path, nodes = self._observe_step(step_dir, subtask)
+                ui_text = prompt_snapshot(nodes)
                 action = self.decide_action(
                     subtask=subtask,
                     step=step,
                     ui_text=ui_text,
                     step_dir=step_dir,
+                    nodes=nodes,
                     incoming_request=request,
                 )
                 status = self.execute_action(action, nodes)
-                self._record_recent_action(action)
+                self._record_recent_action(action, nodes)
                 self.reporter.event(
                     "agent_step",
                     agent=self.name,
@@ -1064,9 +1215,6 @@ class AppStaffAgent:
                     action=None,
                     status="failed",
                     reason=str(exc),
-                    xml=str(xml_path),
-                    screenshot=str(screenshot_path),
-                    visible_texts=visible_texts(nodes, limit=120),
                 )
                 break
         response = RuntimeInformationResponse(
@@ -1133,10 +1281,11 @@ class AppStaffAgent:
                     step=step,
                     ui_text=ui_text,
                     step_dir=step_dir,
+                    nodes=nodes,
                     incoming_request=request,
                 )
                 status = self.execute_action(action, nodes)
-                self._record_recent_action(action)
+                self._record_recent_action(action, nodes)
                 self.reporter.event(
                     "agent_step",
                     agent=self.name,

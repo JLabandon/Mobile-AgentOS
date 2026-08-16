@@ -1,28 +1,30 @@
 {
   "calendar_keep_info": {
-    "goal": "Schedule an event named 'Research Sync' using the event-note information stored in the user's notebook app.",
+    "goal": "Schedule an event named 'Research Sync' for tomorrow at 4:00 PM using the event-note information stored in the user's notebook app. Do not schedule it at the current time.",
     "corner_cases": ["late_bound_information", "peer_selection", "primitive_ui_resume"],
     "success_criteria": {
-      "visible_terms": ["Research Sync", "Googleplex"],
+      "visible_terms": ["Research Sync", "Googleplex", "4:00 PM"],
       "not_visible_at_finish": ["Save"]
     },
     "environment": {
-      "fixture_notes": ["Google Keep contains a note for Research Sync with location Googleplex."]
+      "fixture_notes": ["Google Keep contains a note for Research Sync with location Googleplex. The benchmark task itself supplies the future event time: tomorrow at 4:00 PM."],
+      "time_policy": "Calendar events must be scheduled in the future, at least several hours after the run starts; never use the default current-time draft."
     }
   },
   "clock_keep_wakeup": {
-    "goal": "Create a Google Clock alarm labeled 'Wake up for flight' using the wake-up time stored in the user's notebook app.",
+    "goal": "Create a Google Clock alarm labeled 'Wake up for flight' for tomorrow at 9:30 AM using the wake-up time stored in the user's notebook app. Do not create an alarm for the current time or the next few minutes.",
     "corner_cases": ["requester_is_not_calendar", "time_information", "same_provider_different_need"],
     "success_criteria": {
-      "visible_terms": ["Wake up for flight", "4:00 PM"]
+      "visible_terms": ["Wake up for flight", "9:30 AM"]
     },
     "environment": {
-      "fixture_notes": ["Google Keep contains the morning flight wake-up time."],
-      "fixture_app": "Google Clock is installed and can create alarms."
+      "fixture_notes": ["Google Keep contains the morning flight wake-up time. For this benchmark, the intended safe future alarm time is tomorrow at 9:30 AM."],
+      "fixture_app": "Google Clock is installed and can create alarms.",
+      "time_policy": "Clock alarms must use a safe future time, preferably tomorrow morning, so the alarm does not fire during benchmark execution."
     }
   },
   "calendar_gmail_meeting_detail": {
-    "goal": "Schedule a calendar event titled 'Investor Check-in {run_id}' using the meeting details from the Investor Check-in email.",
+    "goal": "Schedule a calendar event titled 'Investor Check-in {run_id}' for tomorrow afternoon using the meeting details from the Investor Check-in email. Do not schedule it at the current time.",
     "corner_cases": ["real_email_app", "search_before_answer", "provider_may_fail_if_email_missing"],
     "edges": [["gmail", "calendar"]],
     "information_flows": [
@@ -42,15 +44,19 @@
       "not_visible_at_finish": ["Save"]
     },
     "environment": {
-      "fixture_email": "Gmail contains an email titled Investor Check-in Details with location Googleplex and agenda roadmap review, launch blockers, hiring plan."
+      "fixture_email": "Gmail contains an email titled Investor Check-in Details with location Googleplex and agenda roadmap review, launch blockers, hiring plan.",
+      "time_policy": "Calendar events must be scheduled in the future, preferably tomorrow afternoon, and must not rely on the default current-time draft."
     }
   },
   "calendar_maps_place_check": {
-    "goal": "Schedule an 'Offsite Visit' event at Googleplex after checking with a maps app that Googleplex is a real searchable place.",
+    "goal": "Schedule an 'Offsite Visit' event for two days from today at 3:00 PM at Googleplex after checking with a maps app that Googleplex is a real searchable place. Do not schedule it at the current time.",
     "corner_cases": ["real_maps_app", "place_search_information", "decision_support_information", "less_flaky_than_route_eta"],
     "success_criteria": {
-      "visible_terms": ["Offsite Visit", "Googleplex"],
+      "visible_terms": ["Offsite Visit", "Googleplex", "3:00 PM"],
       "not_visible_at_finish": ["Save"]
+    },
+    "environment": {
+      "time_policy": "Calendar events must be scheduled in the future, at least one day after the run starts; never use the default current-time draft."
     }
   },
   "shop_payment_authorization": {
@@ -60,7 +66,8 @@
       "visible_terms": ["PX-1042", "ready for pickup"]
     },
     "environment": {
-      "fixture_app": "Mock Shop exposes order PX-1042 and Mock Payment can authorize it."
+      "fixture_app": "Mock Shop exposes order PX-1042 and Mock Payment can authorize it.",
+      "reset_app_data": ["shop", "payment"]
     }
   }
 }

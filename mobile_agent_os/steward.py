@@ -273,9 +273,9 @@ class StewardAgent:
     def _planner_strategy_text(self) -> str:
         if self._uses_upfront_decomposition():
             execution_note = (
-                "For steward_serial, the Steward will route extracted result information or operation results along the scheduling graph. "
+                "For steward_serial and mobilerun_steward_serial, the Steward will route extracted result information or operation results along the scheduling graph. "
                 if self._is_steward_baseline()
-                else "For multidisplay_split_phase, the AgentOS runtime will schedule all recruited AppAgents, handle IPC delivery, and route peer information without Steward turn-by-turn forwarding. "
+                else "For agentos_parallel and mobilerun_agentos_parallel, the AgentOS runtime will schedule all recruited AppAgents, handle IPC delivery, and route peer information without Steward turn-by-turn forwarding. "
             )
             return (
                 "Planning strategy: use MobileSteward-style upfront app decomposition to expose task-level concurrency. "
@@ -290,9 +290,9 @@ class StewardAgent:
     def _planner_strategy_bullets(self) -> str:
         if self._uses_upfront_decomposition():
             runtime_line = (
-                "- For steward_serial, downstream subtasks should mention they will use information produced by upstream subtasks, and information_flows should define what to forward.\n"
+                "- For steward_serial and mobilerun_steward_serial, downstream subtasks should mention they will use information produced by upstream subtasks, and information_flows should define what to forward.\n"
                 if self._is_steward_baseline()
-                else "- For multidisplay_split_phase, create top-level subtasks for provider and requester apps when both can make independent progress; planner-declared information_flows are delivered on source completion, and runtime requests handle late-bound missing facts.\n"
+                else "- For agentos_parallel and mobilerun_agentos_parallel, create top-level subtasks for provider and requester apps when both can make independent progress; planner-declared information_flows are delivered on source completion, and runtime requests handle late-bound missing facts.\n"
             )
             return (
                 f"- For {self.mode}, it is acceptable to schedule information-source agents as top-level subtasks when the goal clearly benefits from them.\n"
@@ -304,10 +304,10 @@ class StewardAgent:
         return "- Decompose the user goal at app boundaries and add edges for information or operation flow.\n"
 
     def _is_steward_baseline(self) -> bool:
-        return self.mode in {"steward", "steward_serial"}
+        return self.mode in {"steward", "steward_serial", "mobilerun_steward_serial"}
 
     def _uses_upfront_decomposition(self) -> bool:
-        return self.mode in {"steward", "steward_serial", "multidisplay_split_phase"}
+        return self.mode in {"steward", "steward_serial", "agentos_parallel", "mobilerun_steward_serial", "mobilerun_agentos_parallel"}
 
     def resolve_information_request(self, request: RuntimeInformationRequest, run_dir: Path) -> RuntimeInformationResponse:
         if self.mode == "steward":

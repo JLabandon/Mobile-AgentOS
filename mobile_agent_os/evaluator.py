@@ -71,10 +71,15 @@ def record_hidden_evaluation(plan: TaskPlan, reporter: RunReporter) -> Evaluatio
 def _final_visible_texts_by_agent(events: list[dict[str, Any]]) -> dict[str, list[str]]:
     final_texts: dict[str, list[str]] = {}
     for event in events:
-        if event.get("kind") not in {"agent_step", "post_action_completion_check"}:
-            continue
         agent = event.get("agent")
         if not isinstance(agent, str):
+            continue
+        if event.get("kind") == "mobilerun_subtask_finish":
+            reason = str(event.get("reason", "")).strip()
+            if reason:
+                final_texts[agent] = [reason]
+            continue
+        if event.get("kind") not in {"agent_step", "post_action_completion_check"}:
             continue
         texts = event.get("visible_texts")
         if isinstance(texts, list):

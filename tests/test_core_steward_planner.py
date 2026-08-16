@@ -116,7 +116,7 @@ def test_planner_prompt_uses_upfront_app_decomposition_for_baseline_and_agentos(
     agentos_llm = FakeLlm()
 
     serial_plan = StewardAgent(make_agents(serial_llm), RunReporter(tmp_path / "serial"), {task.task_id: task}, mode="steward_serial").plan(task.task_id)  # type: ignore[arg-type]
-    agentos_plan = StewardAgent(make_agents(agentos_llm), RunReporter(tmp_path / "agentos"), {task.task_id: task}, mode="multidisplay_split_phase").plan(task.task_id)  # type: ignore[arg-type]
+    agentos_plan = StewardAgent(make_agents(agentos_llm), RunReporter(tmp_path / "agentos"), {task.task_id: task}, mode="agentos_parallel").plan(task.task_id)  # type: ignore[arg-type]
 
     assert serial_plan.edges == agentos_plan.edges
     serial_system, serial_user = serial_llm.prompts[0]
@@ -131,11 +131,11 @@ def test_multidisplay_planner_uses_upfront_decomposition_without_steward_forward
     task = TaskPlan(
         task_id="gmail_event",
         goal="Schedule an Investor Check-in event using meeting details from email.",
-        mode="multidisplay_split_phase",
+        mode="agentos_parallel",
     )
     llm = FakeLlm()
 
-    StewardAgent(make_agents(llm), RunReporter(tmp_path), {task.task_id: task}, mode="multidisplay_split_phase").plan(task.task_id)  # type: ignore[arg-type]
+    StewardAgent(make_agents(llm), RunReporter(tmp_path), {task.task_id: task}, mode="agentos_parallel").plan(task.task_id)  # type: ignore[arg-type]
 
     system, user = llm.prompts[0]
     assert "MobileSteward-style upfront app decomposition" in system
@@ -223,7 +223,7 @@ def test_task_loader_parses_information_flows(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    plans = load_task_plans(task_path, runtime="multidisplay_split_phase")
+    plans = load_task_plans(task_path, runtime="agentos_parallel")
     flow = plans["calendar_gmail"].information_flows[0]
 
     assert flow.from_agent == "gmail"
@@ -248,7 +248,7 @@ def test_task_loader_applies_run_variables(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    plans = load_task_plans(task_path, runtime="multidisplay_split_phase", variables={"run_id": "abc123"})
+    plans = load_task_plans(task_path, runtime="agentos_parallel", variables={"run_id": "abc123"})
 
     assert plans["calendar_gmail"].goal == "Create event abc123"
     assert plans["calendar_gmail"].success_criteria["visible_terms"] == ["Create event abc123"]

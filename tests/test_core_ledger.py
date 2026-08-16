@@ -5,7 +5,7 @@ from mobile_agent_os.runtime_requests import RuntimeInformationRequest, RuntimeI
 
 def test_ipc_ledger_writes_queryable_events(tmp_path) -> None:
     reporter = RunReporter(tmp_path)
-    ledger = IPCLedger(reporter, mode="multidisplay_split_phase", via="peer")
+    ledger = IPCLedger(reporter, mode="agentos_parallel", via="peer")
     request = RuntimeInformationRequest.create(
         from_agent="calendar_agent",
         to_agent="keep_agent",

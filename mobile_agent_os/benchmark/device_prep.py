@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..adb import AdbClient
 from ..agents import AppConfig
 from ..report import RunReporter
+from ..task_plan import TaskPlan
 
 
 def _content_rows(stdout: str) -> list[str]:
@@ -160,3 +161,26 @@ def reset_configured_app_data(
         package_name = adb.pick_package(config.package_candidates)
         adb.clear_app_data(package_name)
         reporter.event("preflight_app_data_clear", app=str(app_name), package=package_name)
+
+
+def record_provider_evidence(adb: AdbClient, plan: TaskPlan, reporter: RunReporter) -> None:
+    if not any(getattr(subtask, "agent_name", "") == "calendar" for subtask in plan.subtasks):
+        return
+    proc = adb.shell(
+        "content",
+        "query",
+        "--uri",
+        "content://com.android.calendar/events",
+        "--projection",
+        "title:eventLocation:description:dtstart",
+        timeout=20,
+    )
+    rows = _content_rows(proc.stdout)
+    reporter.event(
+        "post_action_completion_check",
+        agent="calendar_agent",
+        source="calendar_provider",
+        visible_texts=rows,
+        returncode=proc.returncode,
+        stderr=proc.stderr.strip(),
+    )
