@@ -29,8 +29,34 @@ build_app() {
   "$BT/apksigner" sign --ks "$HOME/.android/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$OUT/$package.apk" "$build/aligned.apk"
 }
 
+build_workflow_app() {
+  local package="$1"
+  local label="$2"
+  local scenario="$3"
+  local src="$ROOT/mock_workflow"
+  local temp="$OUT/mock_workflow_$scenario/src"
+  rm -rf "$OUT/mock_workflow_$scenario"
+  mkdir -p "$temp"
+  cp -R "$src/." "$temp/"
+  perl -0pi -e "s/<manifest xmlns:android=\"http:\\/\\/schemas.android.com\\/apk\\/res\\/android\">/<manifest xmlns:android=\"http:\\/\\/schemas.android.com\\/apk\\/res\\/android\" package=\"$package\">/" "$temp/AndroidManifest.xml"
+  perl -0pi -e 's/android:name="\\.MainActivity"/android:name="edu.agentos.mockworkflow.MainActivity"/' "$temp/AndroidManifest.xml"
+  cat > "$temp/res/values/strings.xml" <<EOF
+<resources>
+    <string name="app_name">$label</string>
+    <string name="scenario">$scenario</string>
+</resources>
+EOF
+  build_app "build/mock_workflow_$scenario/src" "$package"
+}
+
 build_app mock_shop edu.agentos.mockshop
 build_app mock_payment edu.agentos.mockpayment
+build_workflow_app edu.agentos.mockplanner "Mock Planner" planner
+build_workflow_app edu.agentos.mocktaska "Mock Task A" task_a
+build_workflow_app edu.agentos.mocktaskc "Mock Task C" task_c
 
 echo "$OUT/edu.agentos.mockshop.apk"
 echo "$OUT/edu.agentos.mockpayment.apk"
+echo "$OUT/edu.agentos.mockplanner.apk"
+echo "$OUT/edu.agentos.mocktaska.apk"
+echo "$OUT/edu.agentos.mocktaskc.apk"

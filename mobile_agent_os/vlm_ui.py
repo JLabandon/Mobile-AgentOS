@@ -15,6 +15,9 @@ class DemoAgent:
     package: str
     display_id: int
     surfaceflinger_id: str | None = None
+    description: str = ""
+    capabilities: tuple[str, ...] = ()
+    long_term_memory: tuple[str, ...] = ()
 
 
 def capture_agent_screen(adb: AdbClient, agent: DemoAgent, out_path: Path) -> Path:
@@ -71,4 +74,3 @@ def snap_to_button_center(screenshot: Path, x: int, y: int) -> tuple[int, int, s
     nearest = min(pool, key=lambda item: abs(((item[1] + item[3]) // 2) - y))
     snapped = ((nearest[0] + nearest[2]) // 2, (nearest[1] + nearest[3]) // 2)
     return snapped[0], snapped[1], f"snapped_to_button:{nearest}"
-

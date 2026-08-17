@@ -10,6 +10,8 @@ import android.widget.TextView;
 
 public class MainActivity extends Activity {
     private TextView status;
+    private TextView nextStep;
+    private TextView result;
 
     @Override
     protected void onCreate(Bundle bundle) {
@@ -24,13 +26,19 @@ public class MainActivity extends Activity {
         add(root, "Item: USB-C travel hub", 20);
         add(root, "Merchant: Mock Shop", 20);
         add(root, "Amount due: $42.80", 20);
-        status = add(root, "Status: awaiting payment authorization", 20);
-        add(root, "After payment: use the completion control to update this order.", 20);
+        status = add(root, "Order status: payment required", 20);
+        nextStep = add(root, "Next step: authorize payment before checkout can finish.", 20);
         Button complete = new Button(this);
-        complete.setText("COMPLETE AFTER PAYMENT");
-        complete.setOnClickListener(view -> status.setText("Status: ready for pickup"));
+        complete.setText("Finish order");
+        result = add(root, "", 20);
+        complete.setOnClickListener(view -> {
+            status.setText("Order status: ready for pickup");
+            nextStep.setText("Pickup status: order ready");
+            result.setText("Order ready");
+            complete.setEnabled(false);
+            complete.setVisibility(Button.GONE);
+        });
         root.addView(complete, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        add(root, "Corner case note: This app cannot finish until a peer payment agent returns an operation result.", 18);
         setContentView(scroll);
     }
 

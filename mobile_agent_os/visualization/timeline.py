@@ -288,7 +288,8 @@ def _html(data: str) -> str:
         ['app switches', m.app_switches],
         ['IPC messages', m.ipc_messages],
         ['guard fail', m.fast_guard_fail_count],
-        ['overlap', fmt(m.llm_overlap_time, 's')],
+        ['thinking overlap', fmt(m.parallel_thinking_overlap_time, 's')],
+        ['cross-stage overlap', fmt(m.cross_stage_overlap_time, 's')],
       ];
       return `<div class="metrics">${{items.map(([k,v]) => `<div class="metric"><span>${{esc(k)}}</span><b>${{esc(v)}}</b></div>`).join('')}}</div>`;
     }}

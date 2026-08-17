@@ -2,6 +2,7 @@ import pytest
 
 from mobile_agent_os.actions import ActionError, AgentAction
 from mobile_agent_os.llm import DeepSeekClient
+from mobile_agent_os.vlm import _parse_json_object
 
 
 def test_request_information_action_parses() -> None:
@@ -29,3 +30,19 @@ def test_llm_json_parser_extracts_object_from_extra_text() -> None:
         '{"action":"input","text":"Googleplex"}\n\nextra model text {"ignored": true}'
     )
     assert parsed == {"action": "input", "text": "Googleplex"}
+
+
+def test_vlm_parser_normalizes_point_click() -> None:
+    assert _parse_json_object('{"type":"click","point":[78,49]}') == {"action": "click", "x": 78, "y": 49}
+
+
+def test_vlm_parser_normalizes_click_object() -> None:
+    assert _parse_json_object('{"click":{"x":360,"y":432}}') == {"action": "click", "x": 360, "y": 432}
+
+
+def test_vlm_parser_normalizes_complete_object() -> None:
+    assert _parse_json_object('{"complete":{"message":"done"}}') == {"action": "complete", "message": "done"}
+
+
+def test_vlm_parser_normalizes_back_object() -> None:
+    assert _parse_json_object('{"back":""}') == {"action": "back"}

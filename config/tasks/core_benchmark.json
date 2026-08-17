@@ -1,0 +1,49 @@
+{
+  "planned_shop_payment_authorization": {
+    "description": "Core benchmark task for planned cross-app operation flow.",
+    "goal": "Complete order PX-1042 in Mock Shop. If the order requires payment authorization, get the payment approved in Mock Payment and then finish the order.",
+    "agents": {
+      "shop_agent": "shop",
+      "payment_agent": "payment"
+    },
+    "ipc": [],
+    "success_contains": "ready for pickup",
+    "clear_packages": [
+      "edu.agentos.mockshop",
+      "edu.agentos.mockpayment"
+    ],
+    "final_run_id": ""
+  },
+  "late_bound_appointment_location": {
+    "description": "Core benchmark task for runtime information request.",
+    "goal": "Complete the appointment in Mock Planner. Any missing appointment detail may be available in Google Keep.",
+    "agents": {
+      "planner_agent": "mock_planner",
+      "keep_agent": "keep"
+    },
+    "max_steps": 5,
+    "ipc": [],
+    "success_contains": "appointment complete",
+    "clear_packages": [
+      "edu.agentos.mockplanner"
+    ],
+    "final_run_id": ""
+  },
+  "shared_provider_project_codes": {
+    "description": "Core benchmark task for two concurrent tasks contending for one provider AppAgent.",
+    "goal": "Complete Mock Task A and Mock Task C. Any missing project information may be available in Google Keep.",
+    "agents": {
+      "task_a_agent": "mock_task_a",
+      "task_c_agent": "mock_task_c",
+      "keep_agent": "keep"
+    },
+    "max_steps": 5,
+    "ipc": [],
+    "success_contains": "task c complete",
+    "clear_packages": [
+      "edu.agentos.mocktaska",
+      "edu.agentos.mocktaskc"
+    ],
+    "final_run_id": ""
+  }
+}

@@ -15,6 +15,7 @@ class ScheduledRunStatus(StrEnum):
     PENDING = "PENDING"
     READY = "READY"
     RUNNING = "RUNNING"
+    WAIT_PEER = "WAIT_PEER"
     DONE = "DONE"
     FAILED = "FAILED"
 
@@ -54,6 +55,7 @@ class AgentRunState:
     settle_needed: bool = False
     message: str = ""
     error: str = ""
+    waiting_request_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,7 @@ class FifoJobScheduler:
         max_workers: int,
         serial_order: tuple[str, ...] = (),
         resource_capacity: dict[str, int] | None = None,
+        service_agents: dict[str, Any] | None = None,
     ) -> None:
         self.executor = executor
         self.reporter = reporter
@@ -134,6 +137,7 @@ class FifoJobScheduler:
         self.max_workers = max_workers
         self.serial_order = serial_order
         self.resource_capacity = resource_capacity or {}
+        self.service_agents = service_agents or {}
 
     def run(self, *, specs: list[AgentRunSpec], ipc_specs: list[IPCSpec]) -> ScheduledResult:
         self.reporter.state_event(
@@ -143,6 +147,9 @@ class FifoJobScheduler:
             reason="scheduler_start",
         )
         states = {spec.run_id: AgentRunState(spec=spec) for spec in specs}
+        service_agents = dict(self.service_agents)
+        for spec in specs:
+            service_agents.setdefault(str(getattr(spec.agent, "name", spec.run_id)), spec.agent)
         outcomes: dict[str, ScheduledOutcome] = {}
         ipc_by_source: dict[str, list[IPCSpec]] = {}
         ipc_delivered: set[str] = set()
@@ -154,6 +161,8 @@ class FifoJobScheduler:
         queued: set[tuple[str, str]] = set()
         running: dict[Future[JobResult], tuple[QueueItem, list[str]]] = {}
         leased: dict[str, list[QueueItem]] = {}
+        service_owner: dict[str, str] = {}
+        late_bound_counter = 0
         token = 0
 
         def resource_key(name: str, scope: object = "global") -> str:
@@ -161,8 +170,7 @@ class FifoJobScheduler:
 
         def resources_for(item: QueueItem) -> list[str]:
             if item.kind == "ipc":
-                assert item.ipc is not None
-                return [resource_key("ledger"), resource_key("mailbox", item.ipc.target_run_id)]
+                return []
             assert item.job_type is not None and item.run_id is not None
             state = states[item.run_id]
             display_id = getattr(state.spec.agent, "display_id", "none")
@@ -172,9 +180,30 @@ class FifoJobScheduler:
                 return [resource_key("llm_worker", "pool")]
             if item.job_type == JobType.ACTION:
                 return [resource_key("display_input", display_id)]
-            if item.job_type == JobType.SETTLE_WAIT:
-                return [resource_key("display_settle", display_id)]
             return []
+
+        def agent_name_for(run_id: str) -> str:
+            state = states[run_id]
+            return str(getattr(state.spec.agent, "name", state.spec.run_id))
+
+        def service_allows(run_id: str) -> bool:
+            agent_name = agent_name_for(run_id)
+            owner = service_owner.get(agent_name)
+            if owner is None:
+                service_owner[agent_name] = run_id
+                self.reporter.event("service_context_started", runtime=self.mode, agent=agent_name, run_id=run_id)
+                return True
+            if owner == run_id:
+                return True
+            self.reporter.event("scheduler_blocked_service_busy", runtime=self.mode, agent=agent_name, run_id=run_id, owner_run_id=owner)
+            self.reporter.state_event(agent_name, "QUEUED_FOR_AGENT", runtime=self.mode, run_id=run_id, owner_run_id=owner)
+            return False
+
+        def release_service_if_owner(run_id: str) -> None:
+            agent_name = agent_name_for(run_id)
+            if service_owner.get(agent_name) == run_id:
+                service_owner.pop(agent_name, None)
+                self.reporter.event("service_context_finished", runtime=self.mode, agent=agent_name, run_id=run_id)
 
         def serial_allows(run_id: str) -> bool:
             if not self.serial_order:
@@ -233,9 +262,9 @@ class FifoJobScheduler:
         def enqueue_agent_job(run_id: str) -> None:
             nonlocal token
             state = states[run_id]
-            if state.status in {ScheduledRunStatus.RUNNING, ScheduledRunStatus.DONE, ScheduledRunStatus.FAILED}:
+            if state.status in {ScheduledRunStatus.RUNNING, ScheduledRunStatus.WAIT_PEER, ScheduledRunStatus.DONE, ScheduledRunStatus.FAILED}:
                 return
-            if not serial_allows(run_id) or not dependencies_satisfied(state):
+            if not serial_allows(run_id) or not dependencies_satisfied(state) or not service_allows(run_id):
                 return
             job_type = next_job_type(state)
             if job_type is None:
@@ -284,6 +313,8 @@ class FifoJobScheduler:
                 ]
                 if blocked:
                     self.reporter.event("job_blocked_resource", runtime=self.mode, token=item.token, resources=needed)
+                    if item.run_id:
+                        self.reporter.state_event(agent_name_for(item.run_id), "WAIT_RESOURCE", runtime=self.mode, run_id=item.run_id, resources=needed)
                     postponed.append(item)
                     continue
                 for resource in needed:
@@ -292,12 +323,110 @@ class FifoJobScheduler:
                 running[future] = (item, needed)
             queue.extendleft(reversed(postponed))
 
+        def target_agent_from_action(action: dict[str, Any]) -> Any | None:
+            target = str(action.get("target_agent") or action.get("to_agent") or "").strip()
+            if not target:
+                return None
+            return service_agents.get(target)
+
+        def create_late_bound_request(requester_run_id: str, action: dict[str, Any]) -> None:
+            nonlocal late_bound_counter
+            requester_state = states[requester_run_id]
+            requester_spec = requester_state.spec
+            requester_agent = requester_spec.agent
+            action_name = str(action.get("action", "")).lower()
+            target_agent = target_agent_from_action(action)
+            if target_agent is None:
+                requester_state.status = ScheduledRunStatus.FAILED
+                requester_state.message = f"late-bound request target not found: {action}"
+                outcomes[requester_run_id] = ScheduledOutcome(requester_run_id, False, requester_state.message, requester_state.step)
+                self.reporter.event("late_bound_request_rejected", runtime=self.mode, run_id=requester_run_id, reason=requester_state.message, action=action)
+                return
+            late_bound_counter += 1
+            request_id = str(action.get("request_id") or f"late_bound_{late_bound_counter:03d}_{requester_run_id}")
+            target_name = str(getattr(target_agent, "name", action.get("target_agent", "target_agent")))
+            provider_run_id = f"{target_name}_{request_id}"
+            need = str(action.get("need") or action.get("operation") or action.get("request") or "")
+            resume_instruction = str(action.get("resume_instruction", ""))
+            if action_name == "request_operation":
+                instruction = (
+                    f"Handle a late-bound runtime operation request from {getattr(requester_agent, 'name', requester_run_id)}. "
+                    f"Operation: {need}. Expected result: {action.get('expected_result', '')}. "
+                    "Complete only after the operation result is visible."
+                )
+                payload_kind = "RuntimeOperationResponse"
+            else:
+                instruction = (
+                    f"Handle a late-bound runtime information request from {getattr(requester_agent, 'name', requester_run_id)}. "
+                    f"Need: {need}. If the requested information is already visible on screen, complete immediately with the exact information and visible evidence. "
+                    "The visible note title or app screen does not need to exactly repeat the request wording; semantic field matches are enough. "
+                    "Only interact with the app when the current screen does not contain enough evidence."
+                )
+                payload_kind = "RuntimeInformationResponse"
+            states[provider_run_id] = AgentRunState(
+                spec=AgentRunSpec(
+                    run_id=provider_run_id,
+                    agent=target_agent,
+                    instruction=instruction,
+                    phase="late_bound_response",
+                    max_steps=int(action.get("max_steps", 4)),
+                )
+            )
+            ipc = IPCSpec(
+                request_id=request_id,
+                source_run_id=provider_run_id,
+                target_run_id=requester_run_id,
+                source_agent=target_agent,
+                target_agent=requester_agent,
+                payload_on_success={
+                    "kind": payload_kind,
+                    "mode": "late_bound_request",
+                    "request_id": request_id,
+                    "need": need,
+                    "resume_instruction": resume_instruction,
+                },
+                payload_on_failure={
+                    "kind": payload_kind,
+                    "mode": "late_bound_request",
+                    "request_id": request_id,
+                    "status": "failed",
+                },
+                request_summary=need,
+            )
+            ipc_by_source.setdefault(provider_run_id, []).append(ipc)
+            requester_state.status = ScheduledRunStatus.WAIT_PEER
+            requester_state.waiting_request_id = request_id
+            requester_state.last_screenshot = None
+            requester_state.pending_action = None
+            requester_state.settle_needed = False
+            self.reporter.event(
+                "late_bound_request_created",
+                runtime=self.mode,
+                request_id=request_id,
+                request_kind=action_name,
+                from_run_id=requester_run_id,
+                to_run_id=provider_run_id,
+                from_agent=str(getattr(requester_agent, "name", requester_run_id)),
+                to_agent=target_name,
+                need=need,
+            )
+            self.reporter.state_event(
+                str(getattr(requester_agent, "name", requester_run_id)),
+                "WAIT_PEER",
+                runtime=self.mode,
+                run_id=requester_run_id,
+                request_id=request_id,
+                to_agent=target_name,
+            )
+            enqueue_agent_job(provider_run_id)
+
         def run_queue_item(item: QueueItem) -> JobResult:
             if item.kind == "ipc":
                 assert item.ipc is not None
                 outcome = outcomes.get(item.ipc.source_run_id)
                 message = outcome.message if outcome else ""
-                payload = item.ipc.payload_on_success if outcome and outcome.ok else item.ipc.payload_on_failure
+                payload = dict(item.ipc.payload_on_success if outcome and outcome.ok else item.ipc.payload_on_failure)
+                payload.setdefault("response_message", message)
                 return self.executor.ipc_delivery_job(
                     mode=self.mode,
                     request_id=item.ipc.request_id,
@@ -356,6 +485,7 @@ class FifoJobScheduler:
                     display_id=getattr(spec.agent, "display_id", None),
                     reason=result.error,
                 )
+                release_service_if_owner(spec.run_id)
                 return
             if item.job_type == JobType.OBSERVATION:
                 state.last_screenshot = Path(str(result.output["screenshot"]))
@@ -376,6 +506,7 @@ class FifoJobScheduler:
                     )
                     for ipc in ipc_by_source.get(spec.run_id, []):
                         enqueue_ipc(ipc)
+                    release_service_if_owner(spec.run_id)
                     return
                 if name == "fail":
                     state.status = ScheduledRunStatus.FAILED
@@ -389,6 +520,10 @@ class FifoJobScheduler:
                         display_id=getattr(spec.agent, "display_id", None),
                         reason=state.message,
                     )
+                    release_service_if_owner(spec.run_id)
+                    return
+                if name in {"request_information", "request_operation"}:
+                    create_late_bound_request(spec.run_id, action)
                     return
                 state.pending_action = action
             elif item.job_type == JobType.ACTION:
@@ -407,6 +542,21 @@ class FifoJobScheduler:
             if result.ok:
                 ipc_delivered.add(item.ipc.request_id)
                 ipc_context_by_target.setdefault(item.ipc.target_run_id, []).append(dict(result.output.get("payload", {})))
+                target_state = states.get(item.ipc.target_run_id)
+                if target_state and target_state.status == ScheduledRunStatus.WAIT_PEER:
+                    target_state.status = ScheduledRunStatus.PENDING
+                    target_state.waiting_request_id = ""
+                    target_state.last_screenshot = None
+                    target_state.pending_action = None
+                    target_state.settle_needed = False
+                    self.reporter.event("late_bound_response_delivered", runtime=self.mode, request_id=item.ipc.request_id, target_run_id=item.ipc.target_run_id)
+                    self.reporter.state_event(
+                        str(getattr(target_state.spec.agent, "name", item.ipc.target_run_id)),
+                        "READY",
+                        runtime=self.mode,
+                        run_id=item.ipc.target_run_id,
+                        request_id=item.ipc.request_id,
+                    )
             enqueue_newly_ready()
 
         enqueue_newly_ready()

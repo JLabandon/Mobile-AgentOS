@@ -25,14 +25,19 @@ public class MainActivity extends Activity {
         add(root, "Amount: $42.80", 20);
         status = add(root, "Payment status: pending authorization", 20);
         Button approve = new Button(this);
-        approve.setText("Approve Payment");
-        approve.setOnClickListener(view -> status.setText("Payment status: approved for PX-1042"));
-        root.addView(approve, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         Button decline = new Button(this);
+        approve.setText("Approve Payment");
         decline.setText("Decline Payment");
+        approve.setOnClickListener(view -> {
+            status.setText("Payment status: approved for PX-1042");
+            approve.setEnabled(false);
+            decline.setEnabled(false);
+            approve.setVisibility(Button.GONE);
+            decline.setVisibility(Button.GONE);
+        });
         decline.setOnClickListener(view -> status.setText("Payment status: declined for PX-1042"));
+        root.addView(approve, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(decline, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        add(root, "Corner case note: Operation response must include success or failure and visible evidence.", 18);
         setContentView(scroll);
     }
 

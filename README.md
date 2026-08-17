@@ -6,43 +6,34 @@ The current project focus is **Mobile AgentOS**: a scheduler-driven runtime wher
 
 ## Current Architecture
 
-Mobile AgentOS currently has two layers of runtime work:
+Mobile AgentOS currently has two runtime paths:
 
-- Legacy XML/DeepSeek runtimes remain available for earlier benchmarks: `steward_serial` and `agentos_parallel`.
-- Stage 5 adds a VLM-backed job scheduler path: `job_level_steward_serial` and `job_level_agentos`.
+- XML/DeepSeek runtimes remain available for earlier real-app benchmark work: `steward_serial` and `agentos_parallel`.
+- The current VLM-backed job scheduler path provides `job_level_steward_serial` and `job_level_agentos`.
 
-The Stage 5 path decomposes each app-agent loop into schedulable jobs:
+The VLM scheduler decomposes each app-agent loop into schedulable jobs:
 
 ```text
 ObservationJob -> ThinkingJob -> ActionJob -> SettleWaitJob -> IPCDeliveryJob
 ```
 
-`job_level_steward_serial` uses the same executor and task config as AgentOS, while enforcing a configured serial order. `job_level_agentos` runs the FIFO scheduler with concurrent workers, dependency checks, structured IPC, resident app reuse, and traceable runtime state.
+`job_level_steward_serial` uses the same executor and planner output as AgentOS while enforcing serial execution. `job_level_agentos` runs the FIFO scheduler with concurrent workers, dependency checks, structured IPC, resident app reuse, and traceable runtime state.
 
-The current scheduler is intentionally simple: FIFO, no priority, no preemption, and a lightweight resource capacity table. Complex resource arbitration and larger task suites are planned for Stage 6.
-
-Project documents:
-
-```text
-docs/08_stage5_report.md
-docs/09_stage6_plan.md
-```
+The current scheduler is intentionally simple: FIFO, no priority, no preemption, and non-reentrant AppAgent service queues for shared providers.
 
 ## Benchmark Scope
 
-The curated benchmark suite is in:
+The core job-level benchmark suite is in:
 
 ```text
-benchmarks/tasks/curated_core.json
+config/tasks/core_benchmark.json
 ```
 
 Representative tasks include:
 
-- `calendar_keep_info`: Calendar uses information from Google Keep.
-- `clock_keep_wakeup`: Google Clock uses time information from Google Keep.
-- `calendar_gmail_meeting_detail`: Calendar uses meeting details from Gmail.
-- `calendar_maps_place_check`: Calendar uses place evidence from Google Maps.
-- `shop_payment_authorization`: Mock Shop uses a payment result from Mock Payment.
+- `planned_shop_payment_authorization`: Mock Shop consumes a payment result from Mock Payment through planned IPC.
+- `late_bound_appointment_location`: Mock Planner requests missing appointment information from Google Keep at runtime.
+- `shared_provider_project_codes`: two requester apps contend for one Google Keep AppAgent service queue.
 
 Task fixtures and controlled mock apps live under:
 
@@ -58,7 +49,7 @@ config/apps.json
 
 ## Running
 
-Create a `.env` file with `DEEPSEEK_API_KEY` for the legacy XML/DeepSeek path. The Stage 5 VLM path uses `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
+Create a `.env` file with `DEEPSEEK_API_KEY` for planning and the legacy XML/DeepSeek path. The VLM scheduler uses `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 
 Legacy benchmark examples:
 
@@ -68,11 +59,12 @@ Legacy benchmark examples:
 ./run_mobile_agent_os.sh --runtimes steward_serial,agentos_parallel --task-suite curated_core
 ```
 
-Stage 5 scheduler examples:
+VLM scheduler examples:
 
 ```bash
-python -m mobile_agent_os.benchmark.run_job_level_demo --mode job_level_steward_serial --task shop_payment_authorization
-python -m mobile_agent_os.benchmark.run_job_level_demo --mode job_level_agentos --task shop_payment_authorization
+python -m mobile_agent_os.benchmark.run_job_level_demo --mode job_level_steward_serial --task planned_shop_payment_authorization
+python -m mobile_agent_os.benchmark.run_job_level_demo --mode job_level_agentos --task late_bound_appointment_location
+python -m mobile_agent_os.benchmark.run_job_level_demo --mode job_level_agentos --task shared_provider_project_codes
 ```
 
 If no runtime is provided to `run_mobile_agent_os.sh`, the legacy benchmark runner uses `agentos_parallel`.
