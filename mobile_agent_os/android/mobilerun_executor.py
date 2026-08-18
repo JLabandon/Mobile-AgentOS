@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .agents import SubTask
-from .report import RunReporter
-from .vlm import load_gemini_key
+from ..app_agents import SubTask
+from ..report import RunReporter
+from ..model_clients.gemini import load_gemini_key
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

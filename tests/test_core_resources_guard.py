@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from mobile_agent_os.actions import AgentAction
-from mobile_agent_os.display import DisplaySlot
-from mobile_agent_os.guards import ActionGuard, risk_level_for_action
-from mobile_agent_os.resources import ResourceManager, ResourceSpec
-from mobile_agent_os.snapshots import ObservationSnapshot, PendingAction
+from mobile_agent_os.app_agents.actions import AgentAction
+from mobile_agent_os.android.display import DisplaySlot
+from mobile_agent_os.kernel.guards import ActionGuard, risk_level_for_action
+from mobile_agent_os.kernel.resources import ResourceManager, ResourceSpec
+from mobile_agent_os.kernel.snapshots import ObservationSnapshot, PendingAction
 
 
 def test_resource_manager_acquire_release_and_conflict() -> None:

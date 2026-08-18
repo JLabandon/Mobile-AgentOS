@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from mobile_agent_os.actions import AgentAction
-from mobile_agent_os.agents import AppStaffAgent, SubTask, normalized_match_text
-from mobile_agent_os.completion import is_final_confirmation_action
-from mobile_agent_os.runtime_requests import RuntimeInformationResponse
-from mobile_agent_os.ui_tree import Bounds, UiNode
+from mobile_agent_os.app_agents.actions import AgentAction
+from mobile_agent_os.app_agents import AppStaffAgent, SubTask, normalized_match_text
+from mobile_agent_os.app_agents.completion import is_final_confirmation_action
+from mobile_agent_os.message_layer.messages import RuntimeInformationResponse
+from mobile_agent_os.android.ui_tree import Bounds, UiNode
 
 
 def test_runtime_request_instruction_requires_peer_response_before_completion() -> None:

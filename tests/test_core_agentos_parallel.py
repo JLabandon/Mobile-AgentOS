@@ -4,15 +4,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from mobile_agent_os.actions import AgentAction
-from mobile_agent_os.agents import SubTask
-from mobile_agent_os.display import ActionResult, DisplayManager, DisplaySlot
+from mobile_agent_os.app_agents.actions import AgentAction
+from mobile_agent_os.app_agents import SubTask
+from mobile_agent_os.android.display import ActionResult, DisplayManager, DisplaySlot
 from mobile_agent_os.report import RunReporter
-from mobile_agent_os.runtime_requests import RuntimeInformationResponse, RuntimeOperationRequest, RuntimeOperationResponse
-from mobile_agent_os.runtime_requests import RuntimeInformationRequest
+from mobile_agent_os.message_layer.messages import RuntimeInformationResponse, RuntimeOperationRequest, RuntimeOperationResponse
+from mobile_agent_os.message_layer.messages import RuntimeInformationRequest
 from mobile_agent_os.runtimes.agentos_parallel import AgentOSParallelRuntime
-from mobile_agent_os.snapshots import ObservationSnapshot
-from mobile_agent_os.task_plan import InformationFlow, TaskPlan
+from mobile_agent_os.kernel.snapshots import ObservationSnapshot
+from mobile_agent_os.planner.task_plan import InformationFlow, TaskPlan
 
 
 @dataclass

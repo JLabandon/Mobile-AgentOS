@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..agents import AppStaffAgent
-from ..steward import StewardAgent
+from ..app_agents import AppStaffAgent
+from ..planner import Planner
+from .steward_controller import StewardController
 from ..report import RunReporter
-from ..task_plan import TaskPlan
+from ..planner.task_plan import TaskPlan
 
 
 class StewardSerialRuntime:
@@ -19,9 +20,10 @@ class StewardSerialRuntime:
 
     def run(self, task: str, run_dir: Path) -> bool:
         self.reporter.event("runtime_start", runtime=self.name, task=task)
-        steward = StewardAgent(self.agents, self.reporter, task_plans=self.task_plans, mode="steward")
-        plan = steward.plan(task)
+        planner = Planner(self.agents, self.reporter, task_plans=self.task_plans, mode="steward")
+        plan = planner.plan(task)
         self.last_plan = plan
-        success = steward.run_plan(plan, run_dir)
+        controller = StewardController(self.agents, self.reporter, mode="steward")
+        success = controller.run_plan(plan, run_dir)
         self.reporter.event("runtime_finish", runtime=self.name, task=task, success=success)
         return success

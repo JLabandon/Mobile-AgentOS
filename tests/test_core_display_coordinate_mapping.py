@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from mobile_agent_os.agents import AppStaffAgent
+from mobile_agent_os.app_agents import AppStaffAgent
 
 
 class FakeAdb:

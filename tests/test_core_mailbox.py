@@ -1,5 +1,5 @@
-from mobile_agent_os.ipc import AgentMailbox
-from mobile_agent_os.runtime_requests import RuntimeInformationRequest, RuntimeInformationResponse
+from mobile_agent_os.message_layer import AgentMailbox
+from mobile_agent_os.message_layer.messages import RuntimeInformationRequest, RuntimeInformationResponse
 
 
 def test_mailbox_routes_by_target_agent() -> None:

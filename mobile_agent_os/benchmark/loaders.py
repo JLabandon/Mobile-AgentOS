@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..agents import AppConfig, SubTask
-from ..task_plan import InformationFlow, TaskPlan
+from ..app_agents import AppConfig, SubTask
+from ..planner.task_plan import InformationFlow, TaskPlan
 
 
 def load_app_configs(path: Path) -> dict[str, AppConfig]:

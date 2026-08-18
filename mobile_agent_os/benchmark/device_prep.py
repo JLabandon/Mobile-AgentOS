@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from ..adb import AdbClient
-from ..agents import AppConfig
+from ..android.adb import AdbClient
+from ..app_agents import AppConfig
 from ..report import RunReporter
-from ..task_plan import TaskPlan
+from ..planner.task_plan import TaskPlan
 
 
 def _content_rows(stdout: str) -> list[str]:

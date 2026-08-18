@@ -7,9 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..agents import AppConfig
-from ..steward import StewardAgent
-from ..llm import DeepSeekClient
+from ..app_agents import AppConfig
+from ..planner import Planner
+from ..model_clients.deepseek import DeepSeekClient
 from ..report import RunReporter
 from .environment import load_env_file
 from .loaders import load_app_configs, load_task_plans
@@ -36,7 +36,7 @@ def run_planner_sanity(*, suite_path: Path, apps_path: Path, out_dir: Path, mode
         if tasks:
             plans = {task_id: plan for task_id, plan in plans.items() if task_id in tasks}
         agents = {name: PlannerOnlyAgent(config, llm) for name, config in configs.items()}
-        steward = StewardAgent(agents, reporter, plans, mode=mode)  # type: ignore[arg-type]
+        steward = Planner(agents, reporter, plans, mode=mode)  # type: ignore[arg-type]
         for task_id, task in plans.items():
             plan = steward.plan(task_id)
             prompt_text = _steward_prompt(out_dir, mode, task_id)

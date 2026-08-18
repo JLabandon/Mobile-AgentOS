@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .runtime_requests import RuntimeInformationResponse, RuntimeOperationResponse
-from .ui_tree import visible_texts
+from ..message_layer.messages import RuntimeInformationResponse, RuntimeOperationResponse
+from ..android.ui_tree import visible_texts
 
 
 def normalized_match_text(value: str) -> str:

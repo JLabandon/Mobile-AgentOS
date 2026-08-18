@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .report import RunReporter
-from .task_plan import TaskPlan
+from .planner.task_plan import TaskPlan
 
 
 @dataclass(frozen=True)

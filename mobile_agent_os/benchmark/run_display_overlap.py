@@ -11,11 +11,11 @@ from pathlib import Path
 
 from PIL import Image, ImageStat
 
-from ..adb import AdbClient, AndroidDisplayInfo
+from ..android.adb import AdbClient, AndroidDisplayInfo
 from ..benchmark.loaders import load_app_configs
 from ..report import RunReporter
 from ..visualization.timeline import write_timeline
-from ..vlm import GeminiScreenClient
+from ..model_clients.gemini import GeminiScreenClient
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

@@ -3,9 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .actions import AgentAction
-from .adb import AdbClient
-from .snapshots import ObservationSnapshot
+from ..android.adb import AdbClient
+from ..kernel.snapshots import ObservationSnapshot
 
 
 @dataclass

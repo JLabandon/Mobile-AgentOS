@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from mobile_agent_os.agents import AppConfig
-from mobile_agent_os.registry import AgentRegistry
+from mobile_agent_os.app_agents import AppConfig
+from mobile_agent_os.registry_table import AgentRegistry
 
 
 class FakeAgent:

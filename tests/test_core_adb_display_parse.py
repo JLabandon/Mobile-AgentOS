@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mobile_agent_os.adb import AdbClient
+from mobile_agent_os.android.adb import AdbClient
 
 
 def test_parse_logical_displays_from_android36_dumpsys_shape() -> None:

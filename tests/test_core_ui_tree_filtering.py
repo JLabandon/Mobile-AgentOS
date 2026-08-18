@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mobile_agent_os.ui_tree import parse_ui_xml, prompt_snapshot
+from mobile_agent_os.android.ui_tree import parse_ui_xml, prompt_snapshot
 
 
 def test_parse_ui_xml_filters_layout_noise_and_keeps_controls(tmp_path: Path) -> None:

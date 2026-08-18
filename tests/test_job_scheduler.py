@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from mobile_agent_os.job_scheduler import AgentRunSpec, FifoJobScheduler, IPCSpec
-from mobile_agent_os.jobs import JobResult, JobType
+from mobile_agent_os.kernel.scheduler import AgentRunSpec, FifoJobScheduler, IPCSpec
+from mobile_agent_os.kernel.jobs import JobResult, JobType
 
 
 @dataclass(frozen=True)

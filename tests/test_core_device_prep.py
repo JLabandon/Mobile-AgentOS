@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 
-from mobile_agent_os.agents import AppConfig
+from mobile_agent_os.app_agents import AppConfig
 from mobile_agent_os.benchmark.device_prep import prepare_device
 from mobile_agent_os.report import RunReporter
 

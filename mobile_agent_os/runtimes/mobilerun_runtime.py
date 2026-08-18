@@ -5,11 +5,11 @@ from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
-from ..agents import AppStaffAgent
-from ..mobilerun_executor import MobileRunExecutor
+from ..app_agents import AppStaffAgent
+from ..android.mobilerun_executor import MobileRunExecutor
 from ..report import RunReporter
-from ..steward import StewardAgent
-from ..task_plan import TaskPlan
+from ..planner import Planner
+from ..planner.task_plan import TaskPlan
 
 
 class _MobileRunRuntimeBase:
@@ -24,7 +24,7 @@ class _MobileRunRuntimeBase:
 
     def run(self, task: str, run_dir: Path) -> bool:
         self.reporter.event("runtime_start", runtime=self.name, task=task, execution_backend="vendored_mobilerun")
-        plan = StewardAgent(self.agents, self.reporter, task_plans=self.task_plans, mode=self.name).plan(task)
+        plan = Planner(self.agents, self.reporter, task_plans=self.task_plans, mode=self.name).plan(task)
         self.last_plan = plan
         executor = MobileRunExecutor(self.reporter)
         completed_results: dict[str, str] = {}
@@ -117,7 +117,7 @@ class MobileRunAgentOSRuntime(_MobileRunRuntimeBase):
 
     def run(self, task: str, run_dir: Path) -> bool:
         self.reporter.event("runtime_start", runtime=self.name, task=task, execution_backend="vendored_mobilerun_parallel")
-        plan = StewardAgent(self.agents, self.reporter, task_plans=self.task_plans, mode=self.name).plan(task)
+        plan = Planner(self.agents, self.reporter, task_plans=self.task_plans, mode=self.name).plan(task)
         self.last_plan = plan
         flows = tuple(plan.information_flows)
         if not flows:

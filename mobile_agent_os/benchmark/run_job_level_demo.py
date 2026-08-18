@@ -8,14 +8,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..vlm_ui import DemoAgent, capture_agent_screen, snap_to_button_center
-from ..adb import AdbClient
-from ..job_scheduler import AgentRunSpec, FifoJobScheduler, IPCSpec
-from ..jobs import Job, JobResult, JobType, ResourceRequirement
+from ..android.vlm_ui import DemoAgent, capture_agent_screen, snap_to_button_center
+from ..android.adb import AdbClient
+from ..kernel.scheduler import AgentRunSpec, FifoJobScheduler, IPCSpec
+from ..kernel.jobs import Job, JobResult, JobType, ResourceRequirement
 from ..report import RunReporter
 from ..visualization.timeline import write_timeline
-from ..vlm import GeminiScreenClient, prompt_hash
-from ..llm import DeepSeekClient
+from ..model_clients.gemini import GeminiScreenClient, prompt_hash
+from ..model_clients.deepseek import DeepSeekClient
 from .environment import load_env_file
 
 

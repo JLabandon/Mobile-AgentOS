@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from ..llm import DeepSeekClient
+from ..model_clients.deepseek import DeepSeekClient
 from ..report import RunReporter
 
 

@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mobile_agent_os.agents import AppConfig, SubTask
+from mobile_agent_os.app_agents import AppConfig, SubTask
 from mobile_agent_os.benchmark.loaders import load_task_plans
 from mobile_agent_os.report import RunReporter
-from mobile_agent_os.runtime_requests import AgentRunResult, RuntimeInformationResponse
-from mobile_agent_os.steward import StewardAgent
-from mobile_agent_os.task_plan import TaskPlan
+from mobile_agent_os.message_layer.messages import AgentRunResult, RuntimeInformationResponse
+from mobile_agent_os.planner import Planner
+from mobile_agent_os.runtimes.steward_controller import StewardController
+from mobile_agent_os.planner.task_plan import TaskPlan
 
 
 class FakeLlm:
@@ -90,9 +91,9 @@ def test_dynamic_steward_plan_uses_goal_and_app_profiles_not_hidden_oracle(tmp_p
         success_criteria={"visible_terms": ["SecretHiddenOracle"]},
         environment={"fixture_email": "SecretHiddenOracle is present in Gmail."},
     )
-    steward = StewardAgent(make_agents(llm), RunReporter(tmp_path), {task.task_id: task}, mode="steward_serial")  # type: ignore[arg-type]
+    planner = Planner(make_agents(llm), RunReporter(tmp_path), {task.task_id: task}, mode="steward_serial")  # type: ignore[arg-type]
 
-    plan = steward.plan(task.task_id)
+    plan = planner.plan(task.task_id)
 
     assert [subtask.agent_name for subtask in plan.subtasks] == ["calendar"]
     assert plan.edges == (("calendar", "gmail"),)
@@ -115,8 +116,8 @@ def test_planner_prompt_uses_upfront_app_decomposition_for_baseline_and_agentos(
     serial_llm = FakeLlm()
     agentos_llm = FakeLlm()
 
-    serial_plan = StewardAgent(make_agents(serial_llm), RunReporter(tmp_path / "serial"), {task.task_id: task}, mode="steward_serial").plan(task.task_id)  # type: ignore[arg-type]
-    agentos_plan = StewardAgent(make_agents(agentos_llm), RunReporter(tmp_path / "agentos"), {task.task_id: task}, mode="agentos_parallel").plan(task.task_id)  # type: ignore[arg-type]
+    serial_plan = Planner(make_agents(serial_llm), RunReporter(tmp_path / "serial"), {task.task_id: task}, mode="steward_serial").plan(task.task_id)  # type: ignore[arg-type]
+    agentos_plan = Planner(make_agents(agentos_llm), RunReporter(tmp_path / "agentos"), {task.task_id: task}, mode="agentos_parallel").plan(task.task_id)  # type: ignore[arg-type]
 
     assert serial_plan.edges == agentos_plan.edges
     serial_system, serial_user = serial_llm.prompts[0]
@@ -135,7 +136,7 @@ def test_multidisplay_planner_uses_upfront_decomposition_without_steward_forward
     )
     llm = FakeLlm()
 
-    StewardAgent(make_agents(llm), RunReporter(tmp_path), {task.task_id: task}, mode="agentos_parallel").plan(task.task_id)  # type: ignore[arg-type]
+    Planner(make_agents(llm), RunReporter(tmp_path), {task.task_id: task}, mode="agentos_parallel").plan(task.task_id)  # type: ignore[arg-type]
 
     system, user = llm.prompts[0]
     assert "MobileSteward-style upfront app decomposition" in system
@@ -192,9 +193,9 @@ def test_steward_serial_forwards_upstream_visible_result_to_downstream_agent(tmp
         edges=(("keep", "calendar"),),
         information_flows=(),
     )
-    steward = StewardAgent({"keep": keep, "calendar": calendar}, reporter, {plan.task_id: plan}, mode="steward_serial")  # type: ignore[arg-type]
+    controller = StewardController({"keep": keep, "calendar": calendar}, reporter, mode="steward_serial")  # type: ignore[arg-type]
 
-    assert steward.run_plan(plan, tmp_path)
+    assert controller.run_plan(plan, tmp_path)
     assert calendar.received_information
     assert "Location: Googleplex" in calendar.received_information[0].information
 

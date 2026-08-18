@@ -1,8 +1,8 @@
 import pytest
 
-from mobile_agent_os.actions import ActionError, AgentAction
-from mobile_agent_os.llm import DeepSeekClient
-from mobile_agent_os.vlm import _parse_json_object
+from mobile_agent_os.app_agents.actions import ActionError, AgentAction
+from mobile_agent_os.model_clients.deepseek import DeepSeekClient
+from mobile_agent_os.model_clients.gemini import _parse_json_object
 
 
 def test_request_information_action_parses() -> None:

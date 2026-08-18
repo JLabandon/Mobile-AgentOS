@@ -3,29 +3,30 @@ from __future__ import annotations
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path
 from typing import Protocol, cast
 
-from ..actions import AgentAction
-from ..agents import SubTask
-from ..display import ActionResult, DisplayBackedAgent, DisplayManager, DisplaySlot
-from ..guards import ActionGuard, risk_level_for_action
+from ..app_agents.actions import AgentAction
+from ..app_agents import SubTask
+from ..android.display import ActionResult, DisplayBackedAgent, DisplayManager, DisplaySlot
+from ..kernel.guards import ActionGuard, risk_level_for_action
+from ..kernel.service import KernelService
+from ..message_layer.peer_messages import PeerMessageLayer
 from ..report import RunReporter
-from ..resources import (
+from ..kernel.resources import (
     ResourceManager,
     ResourceSpec,
     display_input_resource,
     display_observation_resource,
     display_slot_resource,
 )
-from ..runtime_requests import RuntimeInformationRequest
-from ..runtime_requests import RuntimeInformationResponse
-from ..runtime_requests import RuntimeOperationRequest
-from ..runtime_requests import RuntimeOperationResponse
-from ..snapshots import ObservationSnapshot, PendingAction, PendingDecision, SnapshotStore, stable_digest
-from ..steward import StewardAgent
-from ..task_plan import InformationFlow, TaskPlan
+from ..message_layer.messages import RuntimeInformationRequest
+from ..message_layer.messages import RuntimeInformationResponse
+from ..message_layer.messages import RuntimeOperationRequest
+from ..message_layer.messages import RuntimeOperationResponse
+from ..kernel.snapshots import ObservationSnapshot, PendingAction, PendingDecision, SnapshotStore, stable_digest
+from ..planner import Planner
+from ..planner.task_plan import InformationFlow, TaskPlan
 
 
 class SplitPhaseAgent(DisplayBackedAgent, Protocol):
@@ -75,6 +76,7 @@ class AgentOSParallelRuntime:
         self.task_plans = task_plans
         self.display_manager = display_manager or DisplayManager()
         self.snapshots = SnapshotStore()
+        self.kernel_service = KernelService(self.display_manager, reporter, runtime_name=self.name)
         self.guard = ActionGuard()
         self.resources = ResourceManager(
             [
@@ -91,11 +93,18 @@ class AgentOSParallelRuntime:
         self._snapshot_by_agent: dict[str, ObservationSnapshot] = {}
         self._pending_action_by_agent: dict[str, PendingAction] = {}
         self._action_count_by_agent: dict[str, int] = {}
-        self._delivered_edges: set[tuple[str, str]] = set()
         self._last_scheduler_signature: tuple[object, ...] | None = None
         self._last_scheduler_trace_at = 0.0
         self._last_idle_signature: tuple[object, ...] | None = None
         self._last_idle_trace_at = 0.0
+        self.messages = PeerMessageLayer(
+            agents=self.agents,
+            reporter=self.reporter,
+            snapshots=self.snapshots,
+            runtime_name=self.name,
+            set_state=self._set_state,
+            get_state=lambda agent_name: self._states.get(agent_name),
+        )
 
     def run(self, task: str, run_dir: Path) -> bool:
         if task not in self.task_plans:
@@ -111,19 +120,11 @@ class AgentOSParallelRuntime:
             agent = self.agents[agent_name]
             self._action_count_by_agent[agent.name] = 0
             package = agent.display_package()
-            slot = self.display_manager.allocate(agent.name, package)
+            slot = self.kernel_service.allocate_display(agent, package)
             if slot.observation_channel != "foreground_uiautomator":
                 self.resources.acquire(agent.name, [display_slot_resource(slot.display_id)], reason="resident_display_slot")
             agent.begin_task(subtask, run_dir)
             self._set_state(agent.name, "READY", display_id=slot.display_id, task=subtask.instruction)
-            self.reporter.event(
-                "display_slot_allocated",
-                runtime=self.name,
-                agent=agent.name,
-                display_id=slot.display_id,
-                app_package=package,
-                observation_channel=slot.observation_channel,
-            )
 
         deadline = time.monotonic() + max(180.0, sum(subtask.max_steps for subtask in active.values()) * 25.0)
         tick = 0
@@ -134,7 +135,7 @@ class AgentOSParallelRuntime:
                 self._trace_scheduler_tick(tick)
 
                 progressed = self._run_one_ready_action(active, run_dir, finished, failed)
-                if self._deliver_finished_edge_results(plan, finished):
+                if self.messages.deliver_finished_edge_results(plan, finished):
                     progressed = True
                 if failed:
                     self.reporter.event("runtime_finish", runtime=self.name, task=task, success=False, reason="agent failed")
@@ -186,7 +187,7 @@ class AgentOSParallelRuntime:
         if configured.subtasks:
             self.reporter.event("steward_plan", message=" -> ".join(subtask.agent_name for subtask in configured.subtasks), task_plan=configured)
             return configured
-        planner = StewardAgent(cast(object, self.agents), self.reporter, self.task_plans, mode=self.name)
+        planner = Planner(cast(object, self.agents), self.reporter, self.task_plans, mode=self.name)
         return planner.plan(task)
 
     def _start_one_observe_and_think(self, active: dict[str, SubTask], finished: set[str], plan: TaskPlan) -> bool:
@@ -207,13 +208,13 @@ class AgentOSParallelRuntime:
         name = candidates[0]
         agent = self.agents[name]
         subtask = active[name]
-        slot = self.display_manager.slot_for_agent(agent.name)
+        slot = self.kernel_service.slot_for_agent(agent.name)
         observe_resource = display_observation_resource(slot.display_id)
         self.resources.acquire(agent.name, [observe_resource], reason="observe")
         try:
-            self._switch_display(agent, purpose="observe", display_id=slot.display_id)
+            self.kernel_service.switch_for_observation(agent)
             self._set_state(agent.name, "OBSERVING", display_id=slot.display_id)
-            snapshot = self.display_manager.capture_observation(agent)
+            snapshot = self.kernel_service.observe(agent)
             self.snapshots.put(snapshot)
             self._snapshot_by_agent[agent.name] = snapshot
             self.reporter.event(
@@ -351,7 +352,7 @@ class AgentOSParallelRuntime:
                 max_steps=subtask.max_steps,
             )
             return True
-        slot = self.display_manager.slot_for_agent(agent.name)
+        slot = self.kernel_service.slot_for_agent(agent.name)
         snapshot = self.snapshots.get(pending.snapshot_id)
         guard = self.guard.check(pending, snapshot, slot)
         self.reporter.event(
@@ -378,9 +379,9 @@ class AgentOSParallelRuntime:
             return False
         self.resources.acquire(agent.name, resources, reason=f"action:{pending.action.action}")
         try:
-            self._switch_display(agent, purpose="act", display_id=slot.display_id, action=pending.action.action)
+            self.kernel_service.switch_for_input(agent, action=pending.action.action)
             self._set_state(agent.name, "ACTING", display_id=slot.display_id, action=pending.action.action)
-            result = self.display_manager.apply_input(agent, pending.action)
+            result = self.kernel_service.act(agent, pending.action)
             self.reporter.event(
                 "agent_step",
                 runtime=self.name,
@@ -416,7 +417,7 @@ class AgentOSParallelRuntime:
             )
             self.reporter.event("runtime_request_created", runtime=self.name, request=request)
             self._set_state(agent.name, "WAIT_PEER", request_id=request.request_id)
-            response = self._resolve_information_request(request, finished)
+            response = self.messages.resolve_information_request(request, finished)
             if response.status != "success":
                 failed.add(agent.name)
                 self._set_state(agent.name, "FAILED", request_id=request.request_id, message=response.limitations or "runtime information request failed")
@@ -435,7 +436,7 @@ class AgentOSParallelRuntime:
             )
             self.reporter.event("runtime_operation_request_created", runtime=self.name, request=request)
             self._set_state(agent.name, "WAIT_PEER", request_id=request.request_id)
-            response = self._resolve_operation_request(request, finished)
+            response = self.messages.resolve_operation_request(request, finished)
             if response.status != "success":
                 failed.add(agent.name)
                 self._set_state(agent.name, "FAILED", request_id=request.request_id, message=response.limitations or "runtime operation request failed")
@@ -457,205 +458,6 @@ class AgentOSParallelRuntime:
                 self._set_state(agent.name, "READY")
         return True
 
-    def _resolve_information_request(self, request: RuntimeInformationRequest, finished: set[str]) -> RuntimeInformationResponse:
-        self.reporter.event("runtime_request_routed", runtime=self.name, via="peer", request=request)
-        self.reporter.ipc_event(
-            request_id=request.request_id,
-            message_kind="RuntimeInformationRequest",
-            status="routed",
-            from_agent=request.from_agent,
-            to_agent=request.to_agent,
-            mode=self.name,
-            via="peer",
-            request_summary=request.need,
-            policy_decision="not_checked",
-        )
-        target_key = request.to_agent.removesuffix("_agent")
-        if target_key not in self.agents:
-            return RuntimeInformationResponse(
-                request_id=request.request_id,
-                from_agent=request.to_agent,
-                to_agent=request.from_agent,
-                status="failed",
-                information="",
-                source_app=request.to_agent,
-                confidence="low",
-                limitations=f"target agent not found: {request.to_agent}",
-            )
-        target_agent = self.agents[target_key]
-        response = target_agent.handle_information_request(request, self.reporter.run_dir, record_ipc=True)
-        self.reporter.event("runtime_response_delivered", runtime=self.name, via="peer", response=response)
-        self.reporter.ipc_event(
-            request_id=request.request_id,
-            message_kind="RuntimeInformationResponse",
-            status="delivered",
-            from_agent=response.from_agent,
-            to_agent=response.to_agent,
-            mode=self.name,
-            via="peer",
-            request_summary=request.need,
-            response_summary=response.information,
-            evidence=response.evidence,
-            policy_decision="not_checked",
-        )
-        if response.status == "success":
-            finished.add(target_agent.name)
-            self._set_state(target_agent.name, "DONE", request_id=request.request_id, action="request_handled")
-        return response
-
-    def _resolve_operation_request(self, request: RuntimeOperationRequest, finished: set[str]) -> RuntimeOperationResponse:
-        self.reporter.event("runtime_operation_request_routed", runtime=self.name, via="peer", request=request)
-        self.reporter.ipc_event(
-            request_id=request.request_id,
-            message_kind="RuntimeOperationRequest",
-            status="routed",
-            from_agent=request.from_agent,
-            to_agent=request.to_agent,
-            mode=self.name,
-            via="peer",
-            request_summary=request.operation,
-            policy_decision="not_checked",
-        )
-        target_key = request.to_agent.removesuffix("_agent")
-        if target_key not in self.agents:
-            return RuntimeOperationResponse(
-                request_id=request.request_id,
-                from_agent=request.to_agent,
-                to_agent=request.from_agent,
-                status="failed",
-                result="",
-                source_app=request.to_agent,
-                limitations=f"target agent not found: {request.to_agent}",
-            )
-        target_agent = self.agents[target_key]
-        response = target_agent.handle_operation_request(request, self.reporter.run_dir, record_ipc=True)
-        self.reporter.event("runtime_operation_response_delivered", runtime=self.name, via="peer", response=response)
-        self.reporter.ipc_event(
-            request_id=request.request_id,
-            message_kind="RuntimeOperationResponse",
-            status="delivered",
-            from_agent=response.from_agent,
-            to_agent=response.to_agent,
-            mode=self.name,
-            via="peer",
-            request_summary=request.operation,
-            response_summary=response.result,
-            evidence=response.evidence,
-            policy_decision="not_checked",
-        )
-        if response.status == "success":
-            finished.add(target_agent.name)
-            self._set_state(target_agent.name, "DONE", request_id=request.request_id, action="operation_handled")
-        return response
-
-    def _switch_display(self, agent: SplitPhaseAgent, *, purpose: str, display_id: int, action: str | None = None) -> None:
-        started = time.monotonic()
-        slot, switched = self.display_manager.activate_for_observation(agent) if purpose == "observe" else self.display_manager.activate_for_input(agent)
-        elapsed = round(time.monotonic() - started, 3)
-        if not switched:
-            return
-        self.reporter.state_event(
-            agent.name,
-            "SWITCH",
-            t=round(time.monotonic() - self.reporter.started_monotonic - elapsed, 3),
-            runtime=self.name,
-            display_id=display_id,
-            purpose=purpose,
-            action=action,
-        )
-        self.reporter.event(
-            "display_switch",
-            runtime=self.name,
-            agent=agent.name,
-            display_id=slot.display_id,
-            purpose=purpose,
-            action=action,
-            elapsed=elapsed,
-        )
-
-    def _deliver_finished_edge_results(self, plan: TaskPlan, finished: set[str]) -> bool:
-        delivered = False
-        for flow in self._plan_information_flows(plan):
-            edge = (flow.from_agent, flow.to_agent, flow.name)
-            if edge in self._delivered_edges:
-                continue
-            source_agent_name = f"{flow.from_agent}_agent"
-            target_agent_name = f"{flow.to_agent}_agent"
-            if source_agent_name not in finished or flow.to_agent not in self.agents:
-                continue
-            snapshot = self.snapshots.latest_for_agent(source_agent_name)
-            if not snapshot or not snapshot.visible_text.strip():
-                continue
-            evidence_ref = str(self.reporter.run_dir / f"{source_agent_name}" / f"{snapshot.snapshot_id}_peer_evidence.txt")
-            Path(evidence_ref).parent.mkdir(parents=True, exist_ok=True)
-            Path(evidence_ref).write_text(self._bounded_snapshot_text(snapshot, max_items=60, max_chars=4000) + "\n", encoding="utf-8")
-            request_id = f"planner_flow_{flow.name}_{flow.from_agent}_{flow.to_agent}"
-            request = RuntimeInformationRequest(
-                request_id=request_id,
-                from_agent=target_agent_name,
-                to_agent=source_agent_name,
-                need=f"{flow.name}: {', '.join(flow.fields) or 'planner-declared information'}",
-                context=f"Planner-declared information flow from {flow.from_agent} to {flow.to_agent}.",
-                purpose="Provide information needed by the downstream app agent.",
-                resume_instruction="Use the returned information to continue the assigned app task.",
-                created_at=datetime.now().isoformat(timespec="seconds"),
-            )
-            self.reporter.ipc_event(
-                request_id=request.request_id,
-                message_kind="RuntimeInformationRequest",
-                status="created",
-                from_agent=request.from_agent,
-                to_agent=request.to_agent,
-                mode=self.name,
-                via="peer",
-                request_summary=request.need,
-                evidence_ref=evidence_ref,
-                policy_decision="not_checked",
-            )
-            response = self.agents[flow.from_agent].answer_information_from_snapshot(request, snapshot, self.reporter.run_dir)
-            self.reporter.event(
-                "peer_result_delivered",
-                runtime=self.name,
-                source_agent=source_agent_name,
-                target_agent=target_agent_name,
-                request_id=request_id,
-                via="peer",
-                flow=flow,
-                snapshot_id=snapshot.snapshot_id,
-            )
-            self.reporter.ipc_event(
-                request_id=request_id,
-                message_kind="RuntimeInformationResponse",
-                status="delivered",
-                from_agent=response.from_agent,
-                to_agent=response.to_agent,
-                mode=self.name,
-                via="peer",
-                request_summary=f"{flow.name}: {', '.join(flow.fields) or 'planner-declared information'}",
-                response_summary=response.information,
-                evidence=response.evidence,
-                evidence_ref=evidence_ref,
-                policy_decision="not_checked",
-            )
-            self.agents[flow.to_agent].receive_information(response)
-            if self._states.get(target_agent_name) == "WAIT_PEER":
-                self._set_state(target_agent_name, "READY", request_id=request_id, from_agent=source_agent_name)
-            self._delivered_edges.add(edge)
-            delivered = True
-        return delivered
-
-    def _bounded_snapshot_text(self, snapshot: ObservationSnapshot, *, max_items: int = 30, max_chars: int = 1600) -> str:
-        values: list[str] = []
-        for node in snapshot.target_nodes:
-            for key in ("text", "content_desc"):
-                value = str(node.get(key, "")).strip()
-                if value and value not in values:
-                    values.append(value)
-            if len(values) >= max_items:
-                break
-        text = "\n".join(values) or snapshot.visible_text
-        return text[:max_chars]
-
     def _plan_information_flows(self, plan: TaskPlan) -> tuple[InformationFlow, ...]:
         if plan.information_flows:
             return plan.information_flows
@@ -668,7 +470,7 @@ class AgentOSParallelRuntime:
         return resources
 
     def _shared_foreground_observation(self) -> bool:
-        slots = self.display_manager.list_slots()
+        slots = self.kernel_service.list_slots()
         if not slots:
             return False
         display_ids = {slot.display_id for slot in slots}
@@ -684,7 +486,7 @@ class AgentOSParallelRuntime:
         pending_decisions = sorted(self._future_by_agent)
         ready_actions = sorted(self._pending_action_by_agent)
         resources = self.resources.snapshot()
-        displays = [slot.__dict__ for slot in self.display_manager.list_slots()]
+        displays = [slot.__dict__ for slot in self.kernel_service.list_slots()]
         signature = (
             tuple(states.items()),
             tuple(pending_decisions),

@@ -1,6 +1,6 @@
-from mobile_agent_os.ipc import IPCLedger
+from mobile_agent_os.message_layer import IPCLedger
 from mobile_agent_os.report import RunReporter
-from mobile_agent_os.runtime_requests import RuntimeInformationRequest, RuntimeInformationResponse
+from mobile_agent_os.message_layer.messages import RuntimeInformationRequest, RuntimeInformationResponse
 
 
 def test_ipc_ledger_writes_queryable_events(tmp_path) -> None:

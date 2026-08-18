@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .runtime_requests import RuntimeInformationRequest, RuntimeOperationRequest
+from ..message_layer.messages import RuntimeInformationRequest, RuntimeOperationRequest
 
 
 def app_system_prompt() -> str:

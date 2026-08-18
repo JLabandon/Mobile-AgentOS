@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from mobile_agent_os.evaluator import evaluate_hidden_success
 from mobile_agent_os.report import RunReporter
-from mobile_agent_os.task_plan import TaskPlan
+from mobile_agent_os.planner.task_plan import TaskPlan
 
 
 def test_hidden_evaluator_uses_final_visible_texts_by_agent(tmp_path) -> None:

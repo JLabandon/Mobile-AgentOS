@@ -6,12 +6,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from ..adb import AdbClient
-from ..agents import AppStaffAgent
-from ..display import AndroidDisplayManager, ForegroundObservationDisplayManager
+from ..android.adb import AdbClient
+from ..app_agents import AppStaffAgent
+from ..android.display import AndroidDisplayManager, ForegroundObservationDisplayManager
 from ..evaluator import record_hidden_evaluation
-from ..llm import DeepSeekClient
-from ..registry import AgentRegistry
+from ..model_clients.deepseek import DeepSeekClient
+from ..registry_table import AgentRegistry
 from ..report import RunReporter
 from ..runtimes import AgentOSParallelRuntime, MobileRunAgentOSRuntime, MobileRunStewardSerialRuntime, StewardSerialRuntime
 from ..visualization.timeline import write_timeline

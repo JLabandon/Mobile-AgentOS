@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .actions import ActionError, AgentAction
-from .adb import AdbClient, AdbError
-from .agent_memory import AgentMemoryStore
+from ..android.adb import AdbClient, AdbError
+from .memory import AgentMemoryStore
 from .completion import (
     is_final_confirmation_action,
     normalized_match_text,
@@ -19,19 +19,19 @@ from .completion import (
     verify_completion as verify_completion_state,
     visible_final_confirmation_controls,
 )
-from .llm import DeepSeekClient, LlmError
+from ..model_clients.deepseek import DeepSeekClient, LlmError
 from .prompts import app_profile_prompt, app_system_prompt, app_user_prompt
-from .report import RunReporter
-from .display import ActionResult
-from .runtime_requests import (
+from ..report import RunReporter
+from ..android.display import ActionResult
+from ..message_layer.messages import (
     AgentRunResult,
     RuntimeInformationRequest,
     RuntimeInformationResponse,
     RuntimeOperationRequest,
     RuntimeOperationResponse,
 )
-from .snapshots import ObservationSnapshot
-from .ui_tree import find_node, parse_ui_xml, prompt_snapshot, visible_texts
+from ..kernel.snapshots import ObservationSnapshot
+from ..android.ui_tree import find_node, parse_ui_xml, prompt_snapshot, visible_texts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

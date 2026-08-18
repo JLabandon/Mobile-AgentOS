@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..report import RunReporter
-from ..runtime_requests import (
+from ..message_layer.messages import (
     RuntimeInformationRequest,
     RuntimeInformationResponse,
     RuntimeOperationRequest,

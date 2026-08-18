@@ -3,9 +3,9 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from .actions import AgentAction
-from .display import DisplaySlot
-from .snapshots import ObservationSnapshot, PendingAction
+from ..app_agents.actions import AgentAction
+from ..android.display import DisplaySlot
+from ..kernel.snapshots import ObservationSnapshot, PendingAction
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .adb import AdbClient
+from ..android.adb import AdbClient
 
 
 @dataclass(frozen=True)
