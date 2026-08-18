@@ -27,6 +27,18 @@
         "-t",
         "vnd.android.cursor.item/event"
       ]
+    },
+    "instance_policy": {
+      "default_mode": "single_service_queue",
+      "supports_parallel_instances": false,
+      "max_parallel_instances": 1,
+      "safe_parallel_request_types": [],
+      "unsafe_parallel_request_types": [
+        "create_calendar_event",
+        "edit_calendar_event"
+      ],
+      "launch_flags": "0x18000000",
+      "last_probe_ref": "../mobile_display_probe/stage7_multi_instance_report.md"
     }
   },
   "clock": {
@@ -75,6 +87,22 @@
     ],
     "launch": {
       "mode": "launcher"
+    },
+    "instance_policy": {
+      "default_mode": "single_service_queue",
+      "supports_parallel_instances": false,
+      "max_parallel_instances": 1,
+      "safe_parallel_request_types": [
+        "read_notes",
+        "search_notes",
+        "retrieve_information"
+      ],
+      "unsafe_parallel_request_types": [
+        "store_notes",
+        "account_mutation"
+      ],
+      "launch_flags": "0x18000000",
+      "last_probe_ref": "../mobile_display_probe/stage7_multi_instance_report.md"
     }
   },
   "maps": {
@@ -96,6 +124,20 @@
     ],
     "launch": {
       "mode": "launcher"
+    },
+    "instance_policy": {
+      "default_mode": "single_service_queue",
+      "supports_parallel_instances": false,
+      "max_parallel_instances": 1,
+      "safe_parallel_request_types": [
+        "search_place",
+        "estimate_route"
+      ],
+      "unsafe_parallel_request_types": [
+        "account_mutation"
+      ],
+      "launch_flags": "0x18000000",
+      "last_probe_ref": "../mobile_display_probe/stage7_multi_instance_report.md"
     }
   },
   "gmail": {
@@ -155,6 +197,17 @@
     ],
     "launch": {
       "mode": "launcher"
+    },
+    "instance_policy": {
+      "default_mode": "single_service_queue",
+      "supports_parallel_instances": false,
+      "max_parallel_instances": 1,
+      "safe_parallel_request_types": [],
+      "unsafe_parallel_request_types": [
+        "authorize_payment",
+        "decline_payment"
+      ],
+      "launch_flags": "0x18000000"
     }
   },
   "mock_planner": {

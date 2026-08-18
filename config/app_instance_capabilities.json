@@ -1,0 +1,72 @@
+{
+  "device_profile": "emulator-5554 / helper-created virtual displays",
+  "last_verified": "2026-08-18",
+  "evidence_report": "../mobile_display_probe/stage7_multi_instance_report.md",
+  "apps": {
+    "keep": {
+      "app_id": "keep",
+      "package": "com.google.android.keep",
+      "supports_multiple_instances": "yes",
+      "supported_modes": [
+        "secondary_display_new_task"
+      ],
+      "max_observed_instances": 2,
+      "instance_isolation": "independent",
+      "state_isolation": "independent_ui",
+      "safe_for_parallel_service": true,
+      "failure_modes": [],
+      "evidence": [
+        "../mobile_display_probe/runs/multi_instance_probe_20260818_211309",
+        "../mobile_display_probe/runs/multi_instance_keep_control_20260818_211513"
+      ]
+    },
+    "maps": {
+      "app_id": "maps",
+      "package": "com.google.android.apps.maps",
+      "supports_multiple_instances": "no",
+      "supported_modes": [],
+      "max_observed_instances": 1,
+      "instance_isolation": "same_activity_reused",
+      "state_isolation": "unclear",
+      "safe_for_parallel_service": false,
+      "failure_modes": [
+        "same_task_brought_to_front"
+      ],
+      "evidence": [
+        "../mobile_display_probe/runs/multi_instance_probe_20260818_211309"
+      ]
+    },
+    "calendar": {
+      "app_id": "calendar",
+      "package": "com.google.android.calendar",
+      "supports_multiple_instances": "no",
+      "supported_modes": [],
+      "max_observed_instances": 1,
+      "instance_isolation": "same_activity_reused",
+      "state_isolation": "unclear",
+      "safe_for_parallel_service": false,
+      "failure_modes": [
+        "launched_on_primary_display"
+      ],
+      "evidence": [
+        "../mobile_display_probe/runs/multi_instance_probe_20260818_211309"
+      ]
+    },
+    "mockshop": {
+      "app_id": "mockshop",
+      "package": "edu.agentos.mockshop",
+      "supports_multiple_instances": "yes",
+      "supported_modes": [
+        "secondary_display_new_task"
+      ],
+      "max_observed_instances": 2,
+      "instance_isolation": "independent",
+      "state_isolation": "independent_ui",
+      "safe_for_parallel_service": true,
+      "failure_modes": [],
+      "evidence": [
+        "../mobile_display_probe/runs/multi_instance_probe_20260818_211309"
+      ]
+    }
+  }
+}

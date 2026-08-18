@@ -24,13 +24,30 @@ TASK = "planned_shop_payment_authorization"
 
 
 class JobLevelExecutor:
-    def __init__(self, *, adb: AdbClient, client: GeminiScreenClient, reporter: RunReporter, run_dir: Path, agents: dict[str, DemoAgent] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        adb: AdbClient,
+        client: GeminiScreenClient,
+        reporter: RunReporter,
+        run_dir: Path,
+        agents: dict[str, DemoAgent] | None = None,
+        instance_launch_flags: dict[str, str] | None = None,
+    ) -> None:
         self.adb = adb
         self.client = client
         self.reporter = reporter
         self.run_dir = run_dir
         self.resident_agents: set[str] = set()
         self.agents = agents or {}
+        self.instance_launch_flags = instance_launch_flags or {}
+        self.instance_parent: dict[str, str] = {}
+        used_displays = {agent.display_id for agent in self.agents.values()}
+        self.available_instance_displays = [
+            display
+            for display in self.adb.list_displays()
+            if display.display_id != 0 and display.surfaceflinger_id and display.display_id not in used_displays
+        ]
 
     def registry_context_for(self, agent: DemoAgent) -> str:
         peers = [peer for peer in self.agents.values() if peer.name != agent.name]
@@ -53,6 +70,33 @@ class JobLevelExecutor:
         else:
             lines.append("- available_peer_agents: none")
         return "\n".join(lines)
+
+    def create_agent_instance(self, agent: DemoAgent, *, service_name: str, run_id: str, instance_index: int) -> DemoAgent:
+        if not self.available_instance_displays:
+            raise RuntimeError(f"no spare display available for {service_name} instance {instance_index}")
+        display = self.available_instance_displays.pop(0)
+        instance_name = f"{service_name}#{instance_index + 1}"
+        instance = DemoAgent(
+            name=instance_name,
+            app_label=agent.app_label,
+            package=agent.package,
+            display_id=display.display_id,
+            surfaceflinger_id=display.surfaceflinger_id,
+            description=agent.description,
+            capabilities=agent.capabilities,
+            long_term_memory=agent.long_term_memory + (f"Runtime instance of {service_name}; preserve request-local UI state.",),
+        )
+        self.instance_parent[instance.name] = service_name
+        self.reporter.event(
+            "app_instance_allocated",
+            runtime="job_level",
+            service_agent=service_name,
+            instance_agent=instance.name,
+            display_id=instance.display_id,
+            surfaceflinger_id=instance.surfaceflinger_id,
+            run_id=run_id,
+        )
+        return instance
 
     def launch_agent(self, agent: DemoAgent) -> None:
         if agent.name in self.resident_agents:
@@ -82,7 +126,9 @@ class JobLevelExecutor:
             package=agent.package,
             purpose="launch_or_resume_agent_app",
         )
-        self.adb.launch_package_on_display(agent.package, agent.display_id)
+        service_name = self.instance_parent.get(agent.name, agent.name)
+        launch_flags = self.instance_launch_flags.get(service_name) if agent.name in self.instance_parent else None
+        self.adb.launch_package_on_display(agent.package, agent.display_id, flags=launch_flags)
         self.adb.settle(1.2)
         self.resident_agents.add(agent.name)
         elapsed = round(time.monotonic() - started, 3)
@@ -368,9 +414,13 @@ def _load_task_config(task: str) -> dict[str, Any]:
     return data[task]
 
 
-def _stage5_agents(adb: AdbClient, task_config: dict[str, Any]) -> dict[str, DemoAgent]:
+def _app_profiles() -> dict[str, Any]:
     apps_path = PROJECT_ROOT / "config" / "apps.json"
-    app_profiles = json.loads(apps_path.read_text(encoding="utf-8"))
+    return json.loads(apps_path.read_text(encoding="utf-8"))
+
+
+def _stage5_agents(adb: AdbClient, task_config: dict[str, Any]) -> dict[str, DemoAgent]:
+    app_profiles = _app_profiles()
     displays = adb.list_displays()
     virtual_displays = [display for display in displays if display.display_id != 0 and display.surfaceflinger_id]
     agents: dict[str, DemoAgent] = {}
@@ -398,6 +448,36 @@ def _stage5_agents(adb: AdbClient, task_config: dict[str, Any]) -> dict[str, Dem
         )
     return agents
 
+
+def _instance_policy_by_agent(task_config: dict[str, Any], overrides: dict[str, str]) -> dict[str, dict[str, Any]]:
+    app_profiles = _app_profiles()
+    policies: dict[str, dict[str, Any]] = {}
+    for agent_id, app_key in task_config.get("agents", {}).items():
+        profile_policy = dict(app_profiles.get(app_key, {}).get("instance_policy", {}))
+        mode = overrides.get(agent_id) or overrides.get(app_key)
+        if mode == "parallel":
+            profile_policy.update({"default_mode": "parallel_instances", "supports_parallel_instances": True, "max_parallel_instances": max(2, int(profile_policy.get("max_parallel_instances", 2)))})
+        elif mode == "single":
+            profile_policy.update({"default_mode": "single_service_queue", "supports_parallel_instances": False, "max_parallel_instances": 1})
+        profile_policy.setdefault("default_mode", "single_service_queue")
+        profile_policy.setdefault("supports_parallel_instances", False)
+        profile_policy.setdefault("max_parallel_instances", 1)
+        profile_policy.setdefault("launch_flags", "0x18000000")
+        policies[agent_id] = profile_policy
+    return policies
+
+
+def _parse_instance_policy_overrides(items: list[str]) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"invalid --instance-policy value: {item}")
+        key, value = item.split("=", 1)
+        value = value.strip().lower()
+        if value not in {"single", "parallel"}:
+            raise ValueError(f"instance policy must be single or parallel: {item}")
+        overrides[key.strip()] = value
+    return overrides
 
 def _plan_runs_with_llm(task_config: dict[str, Any], agents: dict[str, DemoAgent], run_dir: Path, reporter: RunReporter) -> dict[str, Any]:
     goal = str(task_config.get("goal", "")).strip()
@@ -532,7 +612,7 @@ def _scheduled_task_specs(task_config: dict[str, Any], agents: dict[str, DemoAge
             )
     return specs, ipc_specs, str(planned.get("final_run_id") or task_config.get("final_run_id", ""))
 
-def run_demo(*, mode: str, run_root: Path, task: str = TASK) -> Path:
+def run_demo(*, mode: str, run_root: Path, task: str = TASK, instance_policy_overrides: dict[str, str] | None = None) -> Path:
     load_env_file(PROJECT_ROOT / ".env")
     load_env_file(PROJECT_ROOT.parent / "agent_ipc_mvp" / ".env")
     adb = AdbClient()
@@ -541,12 +621,24 @@ def run_demo(*, mode: str, run_root: Path, task: str = TASK) -> Path:
     for package_name in task_config.get("clear_packages", []):
         adb.clear_app_data(package_name)
     agents = _stage5_agents(adb, task_config)
+    instance_policies = _instance_policy_by_agent(task_config, instance_policy_overrides or {})
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = run_root / f"{task}_{mode}_{timestamp}"
     reporter = RunReporter(run_dir)
     reporter.event("runtime_start", runtime=mode, task=task, execution_backend="fifo_job_scheduler_vlm")
+    reporter.event("runtime_registry_instance_policy", runtime=mode, policies=instance_policies)
     client = GeminiScreenClient()
-    executor = JobLevelExecutor(adb=adb, client=client, reporter=reporter, run_dir=run_dir, agents=agents)
+    service_capacity = {
+        agent_id: int(policy.get("max_parallel_instances", 1))
+        for agent_id, policy in instance_policies.items()
+        if mode != "job_level_steward_serial" and policy.get("supports_parallel_instances")
+    }
+    instance_launch_flags = {
+        agent_id: str(policy.get("launch_flags", "0x18000000"))
+        for agent_id, policy in instance_policies.items()
+        if mode != "job_level_steward_serial" and policy.get("supports_parallel_instances")
+    }
+    executor = JobLevelExecutor(adb=adb, client=client, reporter=reporter, run_dir=run_dir, agents=agents, instance_launch_flags=instance_launch_flags)
     specs, ipc_specs, planned_final_run_id = _scheduled_task_specs(task_config, agents, run_dir, reporter)
     serial_order = tuple(task_config.get("serial_order", [])) if mode == "job_level_steward_serial" else ()
     max_workers = 1 if mode == "job_level_steward_serial" else 4
@@ -558,6 +650,7 @@ def run_demo(*, mode: str, run_root: Path, task: str = TASK) -> Path:
         serial_order=serial_order,
         resource_capacity={"llm_worker:pool": max_workers},
         service_agents=agents,
+        service_capacity=service_capacity,
     )
     scheduled = scheduler.run(specs=specs, ipc_specs=ipc_specs)
     final_run_id = str(task_config.get("final_run_id") or planned_final_run_id)
@@ -572,7 +665,12 @@ def run_demo(*, mode: str, run_root: Path, task: str = TASK) -> Path:
     finish_reason = success_target if success_target else scheduled.error
     reporter.event("runtime_finish", runtime=mode, task=task, success=success, reason=finish_reason)
     reporter.write_summary(task=task, runtime=mode, success=success, run_error=None if success else finish_reason)
-    write_timeline(run_root, [run_dir])
+    timeline_run_dirs = sorted(
+        candidate
+        for candidate in run_root.glob(f"{task}_*")
+        if candidate.is_dir() and (candidate / "state_timeline.jsonl").exists()
+    )
+    write_timeline(run_root, timeline_run_dirs or [run_dir])
     return run_dir
 
 
@@ -582,10 +680,11 @@ def main() -> int:
     parser.add_argument("--task", default=TASK)
     parser.add_argument("--run-root", default=str(PROJECT_ROOT / "runs"))
     parser.add_argument("--gemini-model", default="")
+    parser.add_argument("--instance-policy", action="append", default=[], help="Override registry instance policy, e.g. keep_agent=parallel or keep=single")
     args = parser.parse_args()
     if args.gemini_model:
         os.environ["GEMINI_MODEL"] = args.gemini_model
-    print(run_demo(mode=args.mode, run_root=Path(args.run_root), task=args.task))
+    print(run_demo(mode=args.mode, run_root=Path(args.run_root), task=args.task, instance_policy_overrides=_parse_instance_policy_overrides(args.instance_policy)))
     return 0
 
 

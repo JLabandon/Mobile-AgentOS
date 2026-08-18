@@ -111,9 +111,13 @@ class AdbClient:
                 return line
         raise AdbError(f"failed to resolve launcher activity for {package_name}: {proc.stdout}{proc.stderr}")
 
-    def launch_package_on_display(self, package_name: str, display_id: int) -> subprocess.CompletedProcess[str]:
+    def launch_package_on_display(self, package_name: str, display_id: int, *, flags: str | None = None) -> subprocess.CompletedProcess[str]:
         component = self.resolve_activity(package_name)
-        return self.shell("am", "start", "--display", str(display_id), "-n", component, check=True, timeout=30)
+        args = ["am", "start", "--display", str(display_id)]
+        if flags:
+            args += ["-f", flags]
+        args += ["-n", component]
+        return self.shell(*args, check=True, timeout=30)
 
     def force_stop(self, package_name: str) -> subprocess.CompletedProcess[str]:
         return self.shell("am", "force-stop", package_name, timeout=20)

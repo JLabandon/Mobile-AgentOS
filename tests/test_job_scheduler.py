@@ -171,3 +171,41 @@ def test_stage6_two_cross_app_tasks_queue_on_shared_app_agent() -> None:
     assert len(shared_finishes) == 2
     assert shared_starts[0] < shared_finishes[0] < shared_starts[1] < shared_finishes[1]
     assert any(kind == "scheduler_blocked_service_busy" and payload.get("agent") == "shared_agent" for kind, payload in reporter.events)
+
+
+class Stage7FakeExecutor(Stage6FakeExecutor):
+    def create_agent_instance(self, agent: FakeAgent, *, service_name: str, run_id: str, instance_index: int) -> FakeAgent:
+        return FakeAgent(f"{service_name}#{instance_index + 1}", 30 + instance_index)
+
+
+def test_stage7_parallel_provider_instances_when_registry_allows() -> None:
+    with TemporaryDirectory() as tmp:
+        reporter = FakeReporter()
+        task1 = FakeAgent("task1_agent", 1)
+        task2 = FakeAgent("task2_agent", 2)
+        shared = FakeAgent("shared_agent", 3)
+        scheduler = FifoJobScheduler(
+            executor=Stage7FakeExecutor(Path(tmp)),
+            reporter=reporter,
+            mode="stage7_agentos",
+            max_workers=4,
+            resource_capacity={"llm_worker:pool": 4},
+            service_agents={"shared_agent": shared},
+            service_capacity={"shared_agent": 2},
+        )
+        result = scheduler.run(
+            specs=[
+                AgentRunSpec("task1_requester", task1, "needs late peer information", "task1"),
+                AgentRunSpec("task2_requester", task2, "needs late peer information", "task2"),
+            ],
+            ipc_specs=[],
+        )
+
+    assert result.success
+    late_requests = [payload for kind, payload in reporter.events if kind == "late_bound_request_created"]
+    assert len(late_requests) == 2
+    created_instances = [payload for kind, payload in reporter.events if kind == "service_instance_created"]
+    assert len(created_instances) == 1
+    assert created_instances[0]["agent"] == "shared_agent"
+    assert any(payload.get("capacity") == 2 for kind, payload in reporter.events if kind == "service_context_started" and payload.get("agent") == "shared_agent")
+    assert not any(kind == "scheduler_blocked_service_busy" and payload.get("agent") == "shared_agent" for kind, payload in reporter.events)

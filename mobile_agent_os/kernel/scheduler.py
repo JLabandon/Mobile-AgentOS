@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
@@ -46,6 +46,8 @@ class IPCSpec:
 @dataclass
 class AgentRunState:
     spec: AgentRunSpec
+    service_name: str = ""
+    service_instance_index: int = 0
     status: ScheduledRunStatus = ScheduledRunStatus.PENDING
     step: int = 1
     launched: bool = False
@@ -84,6 +86,9 @@ class QueueItem:
 
 class JobExecutor(Protocol):
     def launch_agent(self, agent: Any) -> None:
+        ...
+
+    def create_agent_instance(self, agent: Any, *, service_name: str, run_id: str, instance_index: int) -> Any:
         ...
 
     def observation_job(self, *, agent: Any, phase: str, step: int) -> JobResult:
@@ -130,6 +135,7 @@ class FifoJobScheduler:
         serial_order: tuple[str, ...] = (),
         resource_capacity: dict[str, int] | None = None,
         service_agents: dict[str, Any] | None = None,
+        service_capacity: dict[str, int] | None = None,
     ) -> None:
         self.executor = executor
         self.reporter = reporter
@@ -138,6 +144,7 @@ class FifoJobScheduler:
         self.serial_order = serial_order
         self.resource_capacity = resource_capacity or {}
         self.service_agents = service_agents or {}
+        self.service_capacity = service_capacity or {}
 
     def run(self, *, specs: list[AgentRunSpec], ipc_specs: list[IPCSpec]) -> ScheduledResult:
         self.reporter.state_event(
@@ -146,7 +153,11 @@ class FifoJobScheduler:
             runtime=self.mode,
             reason="scheduler_start",
         )
-        states = {spec.run_id: AgentRunState(spec=spec) for spec in specs}
+        states: dict[str, AgentRunState] = {}
+        for spec in specs:
+            state = AgentRunState(spec=spec)
+            state.service_name = str(getattr(spec.agent, "name", spec.run_id))
+            states[spec.run_id] = state
         service_agents = dict(self.service_agents)
         for spec in specs:
             service_agents.setdefault(str(getattr(spec.agent, "name", spec.run_id)), spec.agent)
@@ -161,7 +172,7 @@ class FifoJobScheduler:
         queued: set[tuple[str, str]] = set()
         running: dict[Future[JobResult], tuple[QueueItem, list[str]]] = {}
         leased: dict[str, list[QueueItem]] = {}
-        service_owner: dict[str, str] = {}
+        service_owners: dict[str, set[str]] = {}
         late_bound_counter = 0
         token = 0
 
@@ -184,26 +195,72 @@ class FifoJobScheduler:
 
         def agent_name_for(run_id: str) -> str:
             state = states[run_id]
-            return str(getattr(state.spec.agent, "name", state.spec.run_id))
+            return state.service_name or str(getattr(state.spec.agent, "name", state.spec.run_id))
+
+        def display_name_for(run_id: str) -> str:
+            return str(getattr(states[run_id].spec.agent, "name", run_id))
 
         def service_allows(run_id: str) -> bool:
-            agent_name = agent_name_for(run_id)
-            owner = service_owner.get(agent_name)
-            if owner is None:
-                service_owner[agent_name] = run_id
-                self.reporter.event("service_context_started", runtime=self.mode, agent=agent_name, run_id=run_id)
+            state = states[run_id]
+            service_name = agent_name_for(run_id)
+            owners = service_owners.setdefault(service_name, set())
+            if run_id in owners:
                 return True
-            if owner == run_id:
-                return True
-            self.reporter.event("scheduler_blocked_service_busy", runtime=self.mode, agent=agent_name, run_id=run_id, owner_run_id=owner)
-            self.reporter.state_event(agent_name, "QUEUED_FOR_AGENT", runtime=self.mode, run_id=run_id, owner_run_id=owner)
-            return False
+            capacity = max(1, int(self.service_capacity.get(service_name, 1)))
+            if len(owners) >= capacity:
+                owner = sorted(owners)[0] if owners else ""
+                self.reporter.event("scheduler_blocked_service_busy", runtime=self.mode, agent=service_name, run_id=run_id, owner_run_id=owner, capacity=capacity)
+                self.reporter.state_event(service_name, "QUEUED_FOR_AGENT", runtime=self.mode, run_id=run_id, owner_run_id=owner, capacity=capacity)
+                return False
+            instance_index = len(owners)
+            if instance_index > 0:
+                factory = getattr(self.executor, "create_agent_instance", None)
+                if factory is None:
+                    self.reporter.event("service_instance_unavailable", runtime=self.mode, agent=service_name, run_id=run_id, reason="executor_has_no_instance_factory")
+                    return False
+                try:
+                    instance_agent = factory(state.spec.agent, service_name=service_name, run_id=run_id, instance_index=instance_index)
+                except Exception as exc:
+                    self.reporter.event("service_instance_unavailable", runtime=self.mode, agent=service_name, run_id=run_id, reason=str(exc))
+                    return False
+                state.spec = replace(state.spec, agent=instance_agent)
+                state.service_instance_index = instance_index
+                self.reporter.event(
+                    "service_instance_created",
+                    runtime=self.mode,
+                    agent=service_name,
+                    run_id=run_id,
+                    instance_agent=str(getattr(instance_agent, "name", run_id)),
+                    instance_index=instance_index,
+                    display_id=getattr(instance_agent, "display_id", None),
+                )
+            owners.add(run_id)
+            self.reporter.event(
+                "service_context_started",
+                runtime=self.mode,
+                agent=service_name,
+                run_id=run_id,
+                instance_agent=display_name_for(run_id),
+                instance_index=state.service_instance_index,
+                capacity=capacity,
+            )
+            return True
 
         def release_service_if_owner(run_id: str) -> None:
-            agent_name = agent_name_for(run_id)
-            if service_owner.get(agent_name) == run_id:
-                service_owner.pop(agent_name, None)
-                self.reporter.event("service_context_finished", runtime=self.mode, agent=agent_name, run_id=run_id)
+            service_name = agent_name_for(run_id)
+            owners = service_owners.get(service_name)
+            if owners and run_id in owners:
+                owners.remove(run_id)
+                if not owners:
+                    service_owners.pop(service_name, None)
+                self.reporter.event(
+                    "service_context_finished",
+                    runtime=self.mode,
+                    agent=service_name,
+                    run_id=run_id,
+                    instance_agent=display_name_for(run_id),
+                    instance_index=states[run_id].service_instance_index,
+                )
 
         def serial_allows(run_id: str) -> bool:
             if not self.serial_order:
@@ -363,7 +420,7 @@ class FifoJobScheduler:
                     "Only interact with the app when the current screen does not contain enough evidence."
                 )
                 payload_kind = "RuntimeInformationResponse"
-            states[provider_run_id] = AgentRunState(
+            provider_state = AgentRunState(
                 spec=AgentRunSpec(
                     run_id=provider_run_id,
                     agent=target_agent,
@@ -372,6 +429,8 @@ class FifoJobScheduler:
                     max_steps=int(action.get("max_steps", 4)),
                 )
             )
+            provider_state.service_name = target_name
+            states[provider_run_id] = provider_state
             ipc = IPCSpec(
                 request_id=request_id,
                 source_run_id=provider_run_id,
