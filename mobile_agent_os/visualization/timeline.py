@@ -10,6 +10,8 @@ from datetime import datetime
 STATE_COLORS = {
     "READY": "#86a873",
     "IDLE": "#eef1f4",
+    "PLANNING": "#b8c0cc",
+    "EXECUTING": "#7b8fa1",
     "SCHEDULING": "#7b8fa1",
     "WAITING": "#c8d0d8",
     "OBSERVING": "#4f8fc0",
@@ -102,10 +104,6 @@ def _attach_relative_times(trace: list[dict[str, Any]], states: list[dict[str, A
         current = _parse_time(str(event.get("time", "")))
         if current:
             event["t"] = round((current - base).total_seconds(), 3)
-    first_state_t = min((float(event.get("t", 0.0)) for event in states), default=0.0)
-    if first_state_t:
-        for event in states:
-            event["t"] = round(float(event.get("t", 0.0)) - first_state_t, 3)
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -304,9 +302,11 @@ def _html(data: str) -> str:
 
     function lanes(states, metrics) {{
       const serial = metrics.runtime === 'steward_serial' || metrics.runtime === 'job_level_steward_serial';
-      const laneStates = serial ? stewardSerialLane(states) : states;
+      const appStates = states.filter(ev => ev.agent !== 'runtime');
+      const runtimeStates = runtimeSummaryLane(appStates, metrics);
+      const laneStates = runtimeStates.concat(serial ? stewardSerialLane(appStates) : appStates);
       const byAgent = new Map();
-      let maxT = 1;
+      let maxT = Math.max(1, Number(metrics.wall_clock_time || 0));
       for (const ev of laneStates) {{
         if (!byAgent.has(ev.agent)) byAgent.set(ev.agent, []);
         byAgent.get(ev.agent).push(ev);
@@ -333,6 +333,56 @@ def _html(data: str) -> str:
       const legend = Object.entries(colors).map(([state, color]) => `<span class="chip"><i class="dot" style="background:${{color}}"></i>${{esc(state)}}</span>`).join('');
       const agentLegend = serial ? stewardAgentLegend(laneStates) : '';
       return `<section class="section"><h2>Agent State Lanes</h2><div class="legend">${{legend}}</div><div class="lane">${{rows || '<p class="muted">No state events.</p>'}}${{agentLegend}}</div></section>`;
+    }}
+
+    function runtimeSummaryLane(appStates, metrics) {{
+      const firstAppState = appStates
+        .map(ev => Number(ev.t || 0))
+        .filter(t => Number.isFinite(t) && t > 0)
+        .sort((a, b) => a - b)[0];
+      const wall = Number(metrics.wall_clock_time || 0);
+      const runtimeStates = [];
+      if (firstAppState && firstAppState > 0.05) {{
+        runtimeStates.push({{
+          time: '',
+          t: 0,
+          agent: 'runtime',
+          state: 'PLANNING',
+          label: 'PLANNING',
+          reason: 'runtime_start_to_first_agent_state',
+          wall_clock_time: metrics.wall_clock_time || null,
+        }});
+      }}
+      if (firstAppState && wall && firstAppState < wall) {{
+        runtimeStates.push({{
+          time: '',
+          t: firstAppState,
+          agent: 'runtime',
+          state: 'EXECUTING',
+          label: 'EXECUTING',
+          reason: 'app_agent_execution_window',
+        }});
+      }} else if (wall) {{
+        runtimeStates.push({{
+          time: '',
+          t: 0,
+          agent: 'runtime',
+          state: 'EXECUTING',
+          label: 'EXECUTING',
+          reason: 'app_agent_execution_window',
+        }});
+      }}
+      if (wall) {{
+        runtimeStates.push({{
+          time: '',
+          t: wall,
+          agent: 'runtime',
+          state: 'DONE',
+          label: 'DONE',
+          reason: 'wall_clock_end_marker',
+        }});
+      }}
+      return runtimeStates;
     }}
 
     function laneRank(agent) {{
@@ -378,6 +428,8 @@ def _html(data: str) -> str:
     function shortState(state) {{
       return {{
         READY: 'RDY',
+        PLANNING: 'PLAN',
+        EXECUTING: 'EXEC',
         SWITCH: 'SW',
         OBSERVING: 'OBS',
         THINKING: 'THK',

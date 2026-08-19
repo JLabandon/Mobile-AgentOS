@@ -1,23 +1,23 @@
 {
   "pipeline_overlap_independent_forms": {
     "description": "Core benchmark task for phase-level overlap across independent AppAgent jobs.",
-    "goal": "Complete the visible local forms in Mock Planner Local, Mock Task A Local, and Mock Task C Local.",
+    "goal": "Complete the appointment form and both project forms.",
     "agents": {
       "planner_local_agent": "mock_planner_local",
       "task_a_local_agent": "mock_task_a_local",
-      "task_c_local_agent": "mock_task_c_local"
+      "task_b_local_agent": "mock_task_b_local"
     },
     "max_steps": 3,
-    "success_contains": "task c complete",
+    "success_contains": "task b complete",
     "clear_packages": [
       "edu.agentos.mockplannerlocal",
       "edu.agentos.mocktaskalocal",
-      "edu.agentos.mocktaskclocal"
+      "edu.agentos.mocktaskblocal"
     ]
   },
   "planned_shop_payment_authorization": {
     "description": "Core benchmark task for planned cross-app operation flow.",
-    "goal": "Complete order PX-1042 in Mock Shop. If the order requires payment authorization, get the payment approved in Mock Payment and then finish the order.",
+    "goal": "Complete order PX-1042.",
     "agents": {
       "shop_agent": "shop",
       "payment_agent": "payment"
@@ -30,7 +30,7 @@
   },
   "late_bound_appointment_location": {
     "description": "Core benchmark task for runtime information request.",
-    "goal": "Complete the appointment in Mock Planner.",
+    "goal": "Complete the appointment.",
     "agents": {
       "planner_agent": "mock_planner",
       "keep_agent": "keep"
@@ -43,17 +43,17 @@
   },
   "shared_provider_project_codes": {
     "description": "Core benchmark task for two concurrent tasks contending for one provider AppAgent.",
-    "goal": "Complete Mock Task A and Mock Task C.",
+    "goal": "Complete both project forms.",
     "agents": {
       "task_a_agent": "mock_task_a",
-      "task_c_agent": "mock_task_c",
+      "task_b_agent": "mock_task_b",
       "keep_agent": "keep"
     },
     "max_steps": 3,
-    "success_contains": "task c complete",
+    "success_contains": "task b complete",
     "clear_packages": [
       "edu.agentos.mocktaska",
-      "edu.agentos.mocktaskc"
+      "edu.agentos.mocktaskb"
     ]
   }
 }

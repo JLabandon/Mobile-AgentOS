@@ -178,13 +178,11 @@
       "request_payment",
       "continue_after_payment"
     ],
-    "description": "Controlled shopping app. It contains an order that cannot complete until a payment-oriented peer returns an operation result.",
+    "description": "Shopping app for inspecting orders, continuing checkout, and completing orders after payment authorization.",
     "long_term_memory": [
-      "When the current run is responsible for completing an order and visible state requires a peer payment result, issue REQUEST_OPERATION to a payment-capable app agent.",
-      "When the current run is responsible for inspecting an order or producing payment request details for another planned run, complete with the visible request details.",
-      "Continue only after a payment operation response is available.",
-      "Refresh or recheck visible payment status after returning from the payment app.",
-      "Use visible order status text as evidence before reporting completion."
+      "Inspect the visible order state before choosing the next action.",
+      "When an order requires external authorization, request the operation from a payment-capable peer agent.",
+      "After an operation result arrives, recheck the order status and continue the order flow from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
@@ -204,10 +202,10 @@
       "decline_payment",
       "inspect_payment_status"
     ],
-    "description": "Controlled payment app. It can approve or decline a visible payment request and expose the resulting status.",
+    "description": "Payment app for inspecting payment requests, approving or declining them, and reporting the resulting status.",
     "long_term_memory": [
-      "For operation requests, use the visible payment request and controls to produce RESPOND_OPERATION.",
-      "Return success only when the approved status is visible; return failed when declined or unavailable."
+      "For operation requests, act only on visible payment requests and controls.",
+      "Report an operation result only when the payment status is visible or clearly unavailable."
     ],
     "launch": {
       "mode": "launcher"
@@ -232,10 +230,11 @@
     "capabilities": [
       "complete_appointment_with_peer_information"
     ],
-    "description": "Controlled planner app for completing appointment forms with visible appointment fields and app-level validation.",
+    "description": "Appointment form app for creating or completing appointments with visible fields such as person, time, and location.",
     "long_term_memory": [
-      "If required appointment information is missing, request it from an appropriate information-provider peer agent.",
-      "When the missing information is available, enter it into the visible field and complete the appointment."
+      "Inspect visible appointment fields before deciding whether information is missing.",
+      "When required appointment information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
+      "When missing information arrives, enter it into the matching visible field and complete the appointment from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
@@ -253,27 +252,29 @@
     "capabilities": [
       "complete_task_a_with_peer_information"
     ],
-    "description": "Controlled task app for completing a visible project workflow with app-level validation.",
+    "description": "Project workflow app for completing a project form with visible project fields.",
     "long_term_memory": [
-      "Use visible app state to decide whether a peer information request is needed.",
-      "When the missing information is available, enter it into the visible field and complete the task."
+      "Inspect visible project fields before deciding whether information is missing.",
+      "When required project information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
+      "When missing information arrives, enter it into the matching visible field and complete the project form from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
     }
   },
-  "mock_task_c": {
-    "label": "Mock Task C",
+  "mock_task_b": {
+    "label": "Mock Task B",
     "package_candidates": [
-      "edu.agentos.mocktaskc"
+      "edu.agentos.mocktaskb"
     ],
     "capabilities": [
-      "complete_task_c_with_peer_information"
+      "complete_task_b_with_peer_information"
     ],
-    "description": "Controlled task app for completing a visible project workflow with app-level validation.",
+    "description": "Project workflow app for completing a project form with visible project fields.",
     "long_term_memory": [
-      "Use visible app state to decide whether a peer information request is needed.",
-      "When the missing information is available, enter it into the visible field and complete the task."
+      "Inspect visible project fields before deciding whether information is missing.",
+      "When required project information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
+      "When missing information arrives, enter it into the matching visible field and complete the project form from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
@@ -287,10 +288,10 @@
     "capabilities": [
       "complete_local_appointment_form"
     ],
-    "description": "Controlled planner app for completing an appointment form using information visible in the app.",
+    "description": "Appointment form app for completing appointments when the required information is visible in the app.",
     "long_term_memory": [
-      "Use visible appointment details and reference fields as evidence.",
-      "Enter the required visible information into the form field and complete the appointment."
+      "Use visible appointment details as evidence.",
+      "Enter required visible information into the matching appointment field and complete the appointment from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
@@ -313,10 +314,10 @@
     "capabilities": [
       "complete_local_project_form"
     ],
-    "description": "Controlled task app for completing a project form using information visible in the app.",
+    "description": "Project form app for completing project records when the required information is visible in the app.",
     "long_term_memory": [
-      "Use visible project details and reference fields as evidence.",
-      "Enter the required visible information into the form field and complete the task."
+      "Use visible project details as evidence.",
+      "Enter required visible information into the matching project field and complete the project form from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
@@ -331,25 +332,25 @@
       "max_parallel_instances": 1
     }
   },
-  "mock_task_c_local": {
-    "label": "Mock Task C Local",
+  "mock_task_b_local": {
+    "label": "Mock Task B Local",
     "package_candidates": [
-      "edu.agentos.mocktaskclocal"
+      "edu.agentos.mocktaskblocal"
     ],
     "capabilities": [
       "complete_local_project_form"
     ],
-    "description": "Controlled task app for completing a project form using information visible in the app.",
+    "description": "Project form app for completing project records when the required information is visible in the app.",
     "long_term_memory": [
-      "Use visible project details and reference fields as evidence.",
-      "Enter the required visible information into the form field and complete the task."
+      "Use visible project details as evidence.",
+      "Enter required visible information into the matching project field and complete the project form from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
     },
     "status_oracle": {
-      "uri": "content://edu.agentos.mocktaskclocal.status/status",
-      "success_contains": "Status: Task C complete"
+      "uri": "content://edu.agentos.mocktaskblocal.status/status",
+      "success_contains": "Status: Task B complete"
     },
     "instance_policy": {
       "default_mode": "single_service_queue",

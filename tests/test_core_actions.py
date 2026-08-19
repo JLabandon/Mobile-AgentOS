@@ -124,19 +124,19 @@ def test_planner_contract_rejects_status_only_information_edge_from_non_provider
 
     agents = {
         "task_a_agent": DemoAgent(name="task_a_agent", app_label="Task A", package="a", display_id=0, capabilities=("complete_form",)),
-        "task_c_agent": DemoAgent(name="task_c_agent", app_label="Task C", package="c", display_id=1, capabilities=("complete_form",)),
+        "task_b_agent": DemoAgent(name="task_b_agent", app_label="Task B", package="b", display_id=1, capabilities=("complete_form",)),
     }
     issues = _planner_contract_issues(
         {
             "runs": [
                 {"run_id": "run_a", "agent_id": "task_a_agent", "instruction": "Complete A"},
-                {"run_id": "run_c", "agent_id": "task_c_agent", "instruction": "Complete C"},
+                {"run_id": "run_b", "agent_id": "task_b_agent", "instruction": "Complete B"},
             ],
             "edges": [
                 {
                     "edge_id": "bad",
                     "from_run_id": "run_a",
-                    "to_run_id": "run_c",
+                    "to_run_id": "run_b",
                     "type": "information",
                     "artifact": "completion status of Task A",
                 }

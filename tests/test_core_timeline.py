@@ -84,3 +84,27 @@ def test_steward_serial_renders_as_one_lane(tmp_path) -> None:
     assert "shortState(ev.state)" in html
     assert "stewardAgentLegend" in html
     assert "agent-coded" in html
+
+
+def test_timeline_keeps_runtime_start_clock_and_planning_gap(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "state_timeline.jsonl").write_text(
+        json.dumps({"t": 4.0, "agent": "calendar_agent", "state": "THINKING"}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "ipc_ledger.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "trace.jsonl").write_text(
+        json.dumps({"time": "2026-08-13T10:00:00", "t": 0.0, "kind": "runtime_start"}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps({"task": "x", "runtime": "agentos_parallel", "wall_clock_time": 10.0}),
+        encoding="utf-8",
+    )
+
+    html = write_timeline(tmp_path, [run_dir]).read_text(encoding="utf-8")
+
+    assert "PLANNING" in html
+    assert '"t": 4.0' in html
+    assert '"wall_clock_time": 10.0' in html

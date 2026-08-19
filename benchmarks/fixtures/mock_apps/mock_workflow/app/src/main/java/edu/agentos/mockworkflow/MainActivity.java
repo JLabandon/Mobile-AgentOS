@@ -80,47 +80,47 @@ public class MainActivity extends Activity {
 
     private String titleText() {
         if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return "Task A Workspace";
-        if ("task_c".equals(scenario) || "task_c_local".equals(scenario)) return "Task C Workspace";
+        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return "Task B Workspace";
         return "Planner Workspace";
     }
 
     private String missingDetailText() {
         if ("planner_local".equals(scenario)) return "Appointment: Alice, tomorrow 3:00 PM\nReference location: Googleplex\nRequired field: location";
         if ("task_a_local".equals(scenario)) return "Project: Alpha\nReference code: ALPHA-42\nRequired field: project code";
-        if ("task_c_local".equals(scenario)) return "Project: Beta\nReference code: BETA-73\nRequired field: project code";
+        if ("task_b_local".equals(scenario)) return "Project: Beta\nReference code: BETA-73\nRequired field: project code";
         if ("task_a".equals(scenario)) return "Project: Alpha\nRequired field: project code";
-        if ("task_c".equals(scenario)) return "Project: Beta\nRequired field: project code";
+        if ("task_b".equals(scenario)) return "Project: Beta\nRequired field: project code";
         return "Appointment: Alice, tomorrow 3:00 PM\nRequired field: location";
     }
 
     private String completedDetailText() {
         if ("task_a".equals(scenario)) return "Project: Alpha\nProject code accepted";
-        if ("task_c".equals(scenario)) return "Project: Beta\nProject code accepted";
+        if ("task_b".equals(scenario)) return "Project: Beta\nProject code accepted";
         return "Appointment: Alice, tomorrow 3:00 PM\nLocation accepted";
     }
 
     private String successText() {
         if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return "Status: Task A complete";
-        if ("task_c".equals(scenario) || "task_c_local".equals(scenario)) return "Status: Task C complete";
+        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return "Status: Task B complete";
         return "Status: Appointment complete";
     }
 
     private String buttonText() {
         if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return "Complete Task A";
-        if ("task_c".equals(scenario) || "task_c_local".equals(scenario)) return "Complete Task C";
+        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return "Complete Task B";
         return "Complete Appointment";
     }
 
     private String inputHint() {
         if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return "Enter project code";
-        if ("task_c".equals(scenario) || "task_c_local".equals(scenario)) return "Enter project code";
+        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return "Enter project code";
         return "Enter appointment location";
     }
 
     private boolean matchesExpected(String value) {
         String normalized = value.trim().toLowerCase();
         if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return normalized.equals("alpha-42");
-        if ("task_c".equals(scenario) || "task_c_local".equals(scenario)) return normalized.equals("beta-73");
+        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return normalized.equals("beta-73");
         return normalized.equals("googleplex");
     }
 

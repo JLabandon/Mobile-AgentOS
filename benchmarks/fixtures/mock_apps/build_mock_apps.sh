@@ -54,16 +54,16 @@ build_app mock_shop edu.agentos.mockshop
 build_app mock_payment edu.agentos.mockpayment
 build_workflow_app edu.agentos.mockplanner "Mock Planner" planner
 build_workflow_app edu.agentos.mocktaska "Mock Task A" task_a
-build_workflow_app edu.agentos.mocktaskc "Mock Task C" task_c
+build_workflow_app edu.agentos.mocktaskb "Mock Task B" task_b
 build_workflow_app edu.agentos.mockplannerlocal "Mock Planner Local" planner_local
 build_workflow_app edu.agentos.mocktaskalocal "Mock Task A Local" task_a_local
-build_workflow_app edu.agentos.mocktaskclocal "Mock Task C Local" task_c_local
+build_workflow_app edu.agentos.mocktaskblocal "Mock Task B Local" task_b_local
 
 echo "$OUT/edu.agentos.mockshop.apk"
 echo "$OUT/edu.agentos.mockpayment.apk"
 echo "$OUT/edu.agentos.mockplanner.apk"
 echo "$OUT/edu.agentos.mocktaska.apk"
-echo "$OUT/edu.agentos.mocktaskc.apk"
+echo "$OUT/edu.agentos.mocktaskb.apk"
 echo "$OUT/edu.agentos.mockplannerlocal.apk"
 echo "$OUT/edu.agentos.mocktaskalocal.apk"
-echo "$OUT/edu.agentos.mocktaskclocal.apk"
+echo "$OUT/edu.agentos.mocktaskblocal.apk"

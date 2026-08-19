@@ -73,19 +73,11 @@ class GeminiScreenClient:
         memory: str = "",
     ) -> str:
         width, height = _model_screenshot_size(screenshot_path)
-        service_prefix = ""
-        if "late-bound runtime information request" in task_instruction.lower():
-            service_prefix = (
-                "This is an information-answering service request. "
-                "Your first choice should be complete, not navigation, when the screenshot already contains text that answers the request. "
-                "Do not click search, menu, sort, or a note/card merely to inspect more detail when the visible text is enough. "
-                "Use click/back only when the current screenshot does not contain enough evidence to answer.\n\n"
-            )
         return (
-            service_prefix +
             "You control a mobile app using only primitive UI actions. "
             "Inspect the screenshot and return one JSON object only. "
             "If the visible screen already shows that the assigned task goal is satisfied, use complete with visible evidence instead of clicking more controls. "
+            "When the assigned task is to provide information to another agent, complete with the visible answer and evidence once the screen contains enough support. "
             "Complete means this agent's assigned app-specific work is done; do not request another peer merely to finish that peer's own assigned work. "
             "Use request_information or request_operation only when the current assigned run cannot make progress without a peer result. "
             "If the current run is to inspect, prepare, retrieve, or report information for another run, complete with the visible result instead of creating a runtime request. "
@@ -115,7 +107,7 @@ class GeminiScreenClient:
             "For request_information or request_operation, choose target_agent only from the available peer agents listed in memory/context. "
             "For request_information, choose a peer whose registry capabilities or description indicate information retrieval, search, reading, notes, email, maps, calendar, or other data-provider behavior. "
             "Do not choose a peer merely because it is another task/form app unless its registry profile says it can provide the requested information. "
-            "For request_information, describe the missing real-world field in need; do not include internal test names, run labels, or benchmark labels unless they are part of the user's data. "
+            "For request_information, describe the missing real-world field in need; do not include internal run labels unless they are part of the user's data. "
             "If your task is to answer another agent's information request and the requested information is visible, use complete with the exact visible answer and evidence. "
             "Do not use markdown.\n\n"
             f"Agent: {agent_name}\n"

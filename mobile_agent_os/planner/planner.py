@@ -58,7 +58,7 @@ class Planner:
             "You are the Planner in a mobile app-oriented multi-agent runtime. "
             "Return JSON only. Given a user goal and app-oriented StaffAgent expertise, recruit app agents, "
             "decompose the goal into app-specific subtasks, and produce an information-flow scheduling graph. "
-            "Do not assume hidden benchmark criteria; use only the user goal and app profiles. "
+            "Use only facts present in the user goal and app profiles. "
             "Each subtask must be assigned to one available agent. "
             "Use app agents for their own apps only. "
             f"{strategy_text} "
@@ -90,7 +90,7 @@ class Planner:
             "- expected_visible_terms must describe final user data or final status text, not transient button labels such as Save, Done, Set Alarm, OK, Create, Submit, or Confirm.\n"
             "- Use enough max_steps for real mobile UI flows. Simple read-only subtasks usually need 4-6; creation flows with pickers, search suggestions, labels, or confirmation dialogs usually need 14-18.\n"
             f"{self._planner_strategy_bullets()}"
-            "- Do not include benchmark-only fields, hidden answers, or emulator setup assumptions.\n"
+            "- Do not include evaluator-only fields, unsupported facts, or device setup assumptions.\n"
         )
         prompt_path = prompt_dir / "llm_prompt.json"
         response_path = prompt_dir / "llm_response.txt"

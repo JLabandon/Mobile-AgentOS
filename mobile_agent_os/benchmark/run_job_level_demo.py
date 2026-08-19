@@ -713,7 +713,7 @@ def _plan_runs_with_llm(task_config: dict[str, Any], agents: dict[str, DemoAgent
     system = (
         "You are the task planner for Mobile AgentOS. Return JSON only. "
         "Given a user goal and a runtime app registry, create app-specific runs for a mobile runtime. "
-        "Use app agents only for their own apps. Do not include hidden benchmark answers. "
+        "Use app agents only for their own apps. Use only facts present in the user goal and registry. "
         "The plan may schedule clear app-level dependencies up front and may leave runtime-dependent facts to AppAgents through runtime requests. "
         "Use app-level instructions and let AppAgents decide primitive UI actions from their screenshots. "
         "Subtask instructions must not guess which peer contains missing information. "
