@@ -1,6 +1,15 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="edu.agentos.mockshop">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="edu.agentos.mockshop"
+    android:versionCode="2"
+    android:versionName="2.0">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" />
+    <queries>
+        <provider android:authorities="edu.agentos.mockpayment.status" />
+    </queries>
     <application android:theme="@style/AppTheme" android:label="Mock Shop">
+        <provider
+            android:name=".ShopStatusProvider"
+            android:authorities="edu.agentos.mockshop.status"
+            android:exported="true" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

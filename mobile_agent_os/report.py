@@ -231,12 +231,12 @@ class RunReporter:
         action = event.get("action")
         if not isinstance(action, dict):
             return False
-        return action.get("action") in {"click", "input", "swipe", "back"}
+        return action.get("action") in {"click", "click_area", "input", "input_text", "type_text", "swipe", "back"}
 
     def _is_ui_action_state(self, event: dict[str, Any]) -> bool:
         if event.get("state") != "ACTING":
             return False
-        return event.get("action") in {"click", "input", "swipe", "back"}
+        return event.get("action") in {"click", "click_area", "input", "input_text", "type_text", "swipe", "back"}
 
     def _parallel_state_overlap(self, intervals: list[dict[str, Any]]) -> float:
         points: list[tuple[float, int]] = []

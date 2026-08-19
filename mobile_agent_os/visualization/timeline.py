@@ -36,6 +36,10 @@ KEY_EVENTS = {
     "display_switch_done",
     "display_switch_skipped",
     "display_observe",
+    "scheduler_blocked_service_busy",
+    "service_request_waiting",
+    "service_instance_created",
+    "app_instance_allocated",
     "llm_submitted",
     "llm_completed",
     "ready_to_act",
@@ -59,7 +63,11 @@ def write_timeline(run_root: Path, run_dirs: list[Path]) -> Path:
     runs = []
     for run_dir in run_dirs:
         trace = read_jsonl(run_dir / "trace.jsonl")
-        states = read_jsonl(run_dir / "state_timeline.jsonl")
+        states = [
+            event
+            for event in read_jsonl(run_dir / "state_timeline.jsonl")
+            if event.get("state") != "QUEUED_FOR_AGENT"
+        ]
         _attach_relative_times(trace, states)
         runs.append(
             {

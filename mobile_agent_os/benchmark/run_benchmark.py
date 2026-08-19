@@ -84,7 +84,7 @@ def run_once(
                         "display_backend_fallback_note",
                         runtime=runtime_name,
                         backend=display_backend,
-                        reason="only one Android display is currently available; virtual-display overlap cannot be demonstrated in this run",
+                        reason="only one Android display is currently available; task-hosting display overlap cannot be demonstrated in this run",
                     )
                     display_manager = ForegroundObservationDisplayManager(adb)
                 else:
@@ -116,7 +116,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--runtime", choices=sorted(RUNTIME_CLASSES), help="Run one runtime.")
     parser.add_argument("--runtimes", help="Comma-separated runtimes.")
     parser.add_argument("--task")
-    parser.add_argument("--task-suite", default="curated_core")
+    parser.add_argument("--task-suite", default="core_benchmark")
     parser.add_argument("--apps-config", default=str(PROJECT_ROOT / "config" / "apps.json"))
     parser.add_argument("--runs-dir", default=str(PROJECT_ROOT / "runs"))
     parser.add_argument("--device", help="Optional adb serial. Defaults to ANDROID_SERIAL or first online device.")
@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         raise ValueError(f"unknown runtimes: {unknown}")
 
-    suite_path = PROJECT_ROOT / "benchmarks" / "tasks" / f"{args.task_suite}.json"
+    suite_path = PROJECT_ROOT / "config" / "tasks" / f"{args.task_suite}.json"
     task_plans = load_task_plans(suite_path, runtime=runtime_names[0])
     task_ids = [args.task] if args.task else list(task_plans)
     run_root = Path(args.runs_dir).resolve() / f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

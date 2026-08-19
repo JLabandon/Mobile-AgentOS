@@ -189,7 +189,7 @@ def find_node(
 ) -> UiNode | None:
     if target_id is not None:
         for node in nodes:
-            if node.index == target_id:
+            if node.index == target_id and (not editable_only or node.editable):
                 return node
     if target_text:
         needle = target_text.lower()

@@ -10,7 +10,7 @@
       "edit_calendar_event",
       "read_calendar_event"
     ],
-    "task_guidelines": [
+    "long_term_memory": [
       "For creating an event, open the event insert screen, ensure required information is present, then save only after the relevant fields are filled.",
       "If an event requires information that is not available in Calendar, request it from an appropriate app-oriented agent before saving.",
       "When runtime information is received, decide how it should be used in Calendar and manipulate the visible UI with primitive actions.",
@@ -38,7 +38,7 @@
         "edit_calendar_event"
       ],
       "launch_flags": "0x18000000",
-      "last_probe_ref": "../mobile_display_probe/stage7_multi_instance_report.md"
+      "evidence": "Android multi-instance probe"
     }
   },
   "clock": {
@@ -52,7 +52,7 @@
       "create_alarm",
       "read_alarm"
     ],
-    "task_guidelines": [
+    "long_term_memory": [
       "For alarm tasks, inspect whether the requested alarm already exists before creating a duplicate.",
       "If the time picker is graphical, look for keyboard, text-input, or edit controls to enter the time manually.",
       "If manual input is unavailable, use primitive clicks on visible time picker controls and learn from failed attempts through long-term memory.",
@@ -80,13 +80,17 @@
       "store_notes"
     ],
     "description": "Notebook and note-taking app. It can store, search, and read user notes. It should answer runtime information requests only with information supported by visible notes or its app memory.",
-    "task_guidelines": [
+    "long_term_memory": [
       "When answering an information request, search or inspect notes related to the request context.",
       "Return concise information with evidence from visible note text. Do not decide how the requesting app should use the information.",
       "If the needed information is not visible or cannot be supported by a note, respond with failed status rather than inventing an answer."
     ],
     "launch": {
       "mode": "launcher"
+    },
+    "display_policy": {
+      "placement": "primary_only",
+      "reason": "Current device registry keeps Google Keep on the primary display when secondary task-hosting placement is not reliable for this app."
     },
     "instance_policy": {
       "default_mode": "single_service_queue",
@@ -102,7 +106,7 @@
         "account_mutation"
       ],
       "launch_flags": "0x18000000",
-      "last_probe_ref": "../mobile_display_probe/stage7_multi_instance_report.md"
+      "evidence": "Android multi-instance probe"
     }
   },
   "maps": {
@@ -117,13 +121,17 @@
       "retrieve_place_information"
     ],
     "description": "Map and navigation app. It can search real places and inspect route or travel-time information shown on screen.",
-    "task_guidelines": [
+    "long_term_memory": [
       "Use visible place, route, distance, and travel-time information as evidence.",
       "For route feasibility questions, answer with the visible travel time and whether it satisfies the requester context.",
       "Do not invent travel-time information if no route result is visible."
     ],
     "launch": {
       "mode": "launcher"
+    },
+    "display_policy": {
+      "placement": "primary_only",
+      "reason": "Current device registry keeps Google Maps on the primary display when secondary task-hosting placement is not reliable for this app."
     },
     "instance_policy": {
       "default_mode": "single_service_queue",
@@ -137,7 +145,7 @@
         "account_mutation"
       ],
       "launch_flags": "0x18000000",
-      "last_probe_ref": "../mobile_display_probe/stage7_multi_instance_report.md"
+      "evidence": "Android multi-instance probe"
     }
   },
   "gmail": {
@@ -151,7 +159,7 @@
       "retrieve_information"
     ],
     "description": "Email app. It can search and read email content such as meeting details, booking confirmations, deadlines, addresses, and contacts.",
-    "task_guidelines": [
+    "long_term_memory": [
       "When answering a request, search or inspect visible emails related to the request.",
       "Return only information supported by visible email subject/body text.",
       "If the needed email is unavailable, respond with failed status and evidence of the searched UI."
@@ -171,13 +179,19 @@
       "continue_after_payment"
     ],
     "description": "Controlled shopping app. It contains an order that cannot complete until a payment-oriented peer returns an operation result.",
-    "task_guidelines": [
-      "If payment is required, issue REQUEST_OPERATION to a payment-capable app agent.",
+    "long_term_memory": [
+      "When the current run is responsible for completing an order and visible state requires a peer payment result, issue REQUEST_OPERATION to a payment-capable app agent.",
+      "When the current run is responsible for inspecting an order or producing payment request details for another planned run, complete with the visible request details.",
       "Continue only after a payment operation response is available.",
+      "Refresh or recheck visible payment status after returning from the payment app.",
       "Use visible order status text as evidence before reporting completion."
     ],
     "launch": {
       "mode": "launcher"
+    },
+    "status_oracle": {
+      "uri": "content://edu.agentos.mockshop.status/status",
+      "success_contains": "ready_for_pickup"
     }
   },
   "payment": {
@@ -191,7 +205,7 @@
       "inspect_payment_status"
     ],
     "description": "Controlled payment app. It can approve or decline a visible payment request and expose the resulting status.",
-    "task_guidelines": [
+    "long_term_memory": [
       "For operation requests, use the visible payment request and controls to produce RESPOND_OPERATION.",
       "Return success only when the approved status is visible; return failed when declined or unavailable."
     ],
@@ -218,10 +232,18 @@
     "capabilities": [
       "complete_appointment_with_peer_information"
     ],
-    "description": "Controlled planner app for completing appointments. It may require peer-supplied information when the visible app state shows missing appointment details.",
-    "task_guidelines": [
-      "If required appointment information is missing, request it from an appropriate information-provider peer agent before completing."
-    ]
+    "description": "Controlled planner app for completing appointment forms with visible appointment fields and app-level validation.",
+    "long_term_memory": [
+      "If required appointment information is missing, request it from an appropriate information-provider peer agent.",
+      "When the missing information is available, enter it into the visible field and complete the appointment."
+    ],
+    "launch": {
+      "mode": "launcher"
+    },
+    "status_oracle": {
+      "uri": "content://edu.agentos.mockplanner.status/status",
+      "success_contains": "Status: Appointment complete"
+    }
   },
   "mock_task_a": {
     "label": "Mock Task A",
@@ -231,10 +253,14 @@
     "capabilities": [
       "complete_task_a_with_peer_information"
     ],
-    "description": "Controlled task app for completing a visible project workflow. It may require peer-supplied information when the visible app state shows missing project details.",
-    "task_guidelines": [
-      "Use visible app state to decide whether a peer information request is needed before completing."
-    ]
+    "description": "Controlled task app for completing a visible project workflow with app-level validation.",
+    "long_term_memory": [
+      "Use visible app state to decide whether a peer information request is needed.",
+      "When the missing information is available, enter it into the visible field and complete the task."
+    ],
+    "launch": {
+      "mode": "launcher"
+    }
   },
   "mock_task_c": {
     "label": "Mock Task C",
@@ -244,9 +270,91 @@
     "capabilities": [
       "complete_task_c_with_peer_information"
     ],
-    "description": "Controlled task app for completing a visible project workflow. It may require peer-supplied information when the visible app state shows missing project details.",
-    "task_guidelines": [
-      "Use visible app state to decide whether a peer information request is needed before completing."
-    ]
+    "description": "Controlled task app for completing a visible project workflow with app-level validation.",
+    "long_term_memory": [
+      "Use visible app state to decide whether a peer information request is needed.",
+      "When the missing information is available, enter it into the visible field and complete the task."
+    ],
+    "launch": {
+      "mode": "launcher"
+    }
+  },
+  "mock_planner_local": {
+    "label": "Mock Planner Local",
+    "package_candidates": [
+      "edu.agentos.mockplannerlocal"
+    ],
+    "capabilities": [
+      "complete_local_appointment_form"
+    ],
+    "description": "Controlled planner app for completing an appointment form using information visible in the app.",
+    "long_term_memory": [
+      "Use visible appointment details and reference fields as evidence.",
+      "Enter the required visible information into the form field and complete the appointment."
+    ],
+    "launch": {
+      "mode": "launcher"
+    },
+    "status_oracle": {
+      "uri": "content://edu.agentos.mockplannerlocal.status/status",
+      "success_contains": "Status: Appointment complete"
+    },
+    "instance_policy": {
+      "default_mode": "single_service_queue",
+      "supports_parallel_instances": false,
+      "max_parallel_instances": 1
+    }
+  },
+  "mock_task_a_local": {
+    "label": "Mock Task A Local",
+    "package_candidates": [
+      "edu.agentos.mocktaskalocal"
+    ],
+    "capabilities": [
+      "complete_local_project_form"
+    ],
+    "description": "Controlled task app for completing a project form using information visible in the app.",
+    "long_term_memory": [
+      "Use visible project details and reference fields as evidence.",
+      "Enter the required visible information into the form field and complete the task."
+    ],
+    "launch": {
+      "mode": "launcher"
+    },
+    "status_oracle": {
+      "uri": "content://edu.agentos.mocktaskalocal.status/status",
+      "success_contains": "Status: Task A complete"
+    },
+    "instance_policy": {
+      "default_mode": "single_service_queue",
+      "supports_parallel_instances": false,
+      "max_parallel_instances": 1
+    }
+  },
+  "mock_task_c_local": {
+    "label": "Mock Task C Local",
+    "package_candidates": [
+      "edu.agentos.mocktaskclocal"
+    ],
+    "capabilities": [
+      "complete_local_project_form"
+    ],
+    "description": "Controlled task app for completing a project form using information visible in the app.",
+    "long_term_memory": [
+      "Use visible project details and reference fields as evidence.",
+      "Enter the required visible information into the form field and complete the task."
+    ],
+    "launch": {
+      "mode": "launcher"
+    },
+    "status_oracle": {
+      "uri": "content://edu.agentos.mocktaskclocal.status/status",
+      "success_contains": "Status: Task C complete"
+    },
+    "instance_policy": {
+      "default_mode": "single_service_queue",
+      "supports_parallel_instances": false,
+      "max_parallel_instances": 1
+    }
   }
 }

@@ -38,8 +38,9 @@ build_workflow_app() {
   rm -rf "$OUT/mock_workflow_$scenario"
   mkdir -p "$temp"
   cp -R "$src/." "$temp/"
-  perl -0pi -e "s/<manifest xmlns:android=\"http:\\/\\/schemas.android.com\\/apk\\/res\\/android\">/<manifest xmlns:android=\"http:\\/\\/schemas.android.com\\/apk\\/res\\/android\" package=\"$package\">/" "$temp/AndroidManifest.xml"
-  perl -0pi -e 's/android:name="\\.MainActivity"/android:name="edu.agentos.mockworkflow.MainActivity"/' "$temp/AndroidManifest.xml"
+  perl -0pi -e "s/package=\"edu.agentos.mockworkflow\"/package=\"$package\"/" "$temp/AndroidManifest.xml"
+  perl -0pi -e "s/__STATUS_AUTHORITY__/$package.status/" "$temp/AndroidManifest.xml"
+  perl -0pi -e 's/android:name="\.MainActivity"/android:name="edu.agentos.mockworkflow.MainActivity"/g' "$temp/AndroidManifest.xml"
   cat > "$temp/res/values/strings.xml" <<EOF
 <resources>
     <string name="app_name">$label</string>
@@ -54,9 +55,15 @@ build_app mock_payment edu.agentos.mockpayment
 build_workflow_app edu.agentos.mockplanner "Mock Planner" planner
 build_workflow_app edu.agentos.mocktaska "Mock Task A" task_a
 build_workflow_app edu.agentos.mocktaskc "Mock Task C" task_c
+build_workflow_app edu.agentos.mockplannerlocal "Mock Planner Local" planner_local
+build_workflow_app edu.agentos.mocktaskalocal "Mock Task A Local" task_a_local
+build_workflow_app edu.agentos.mocktaskclocal "Mock Task C Local" task_c_local
 
 echo "$OUT/edu.agentos.mockshop.apk"
 echo "$OUT/edu.agentos.mockpayment.apk"
 echo "$OUT/edu.agentos.mockplanner.apk"
 echo "$OUT/edu.agentos.mocktaska.apk"
 echo "$OUT/edu.agentos.mocktaskc.apk"
+echo "$OUT/edu.agentos.mockplannerlocal.apk"
+echo "$OUT/edu.agentos.mocktaskalocal.apk"
+echo "$OUT/edu.agentos.mocktaskclocal.apk"

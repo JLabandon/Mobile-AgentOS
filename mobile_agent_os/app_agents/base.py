@@ -46,7 +46,7 @@ class AppConfig:
     launch: dict[str, Any]
     capabilities: tuple[str, ...] = ()
     description: str = ""
-    task_guidelines: tuple[str, ...] = ()
+    configured_long_term_memory: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -59,9 +59,9 @@ def app_profile_prompt(agent: Any) -> str:
         f"- capabilities: {', '.join(agent.config.capabilities) or 'none'}\n"
         "Available IPC peers:\n"
         f"{peer_text or '- none'}\n"
-        "Task guideline memory:\n"
-        + "\n".join(f"- {item}" for item in agent.config.task_guidelines)
-        + ("\n" if agent.config.task_guidelines else "- none\n")
+        "Configured long-term app memory:\n"
+        + "\n".join(f"- {item}" for item in agent.config.configured_long_term_memory)
+        + ("\n" if agent.config.configured_long_term_memory else "- none\n")
         + "Long-term app memory:\n"
         + "\n".join(f"- {item}" for item in agent.long_term_memory[-8:])
         + ("\n" if agent.long_term_memory else "- none\n")

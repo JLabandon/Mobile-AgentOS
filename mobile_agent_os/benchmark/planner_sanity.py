@@ -133,7 +133,7 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Steward planner sanity checks without emulator.")
-    parser.add_argument("--task-suite", default="curated_core")
+    parser.add_argument("--task-suite", default="core_benchmark")
     parser.add_argument("--apps-config", default=str(PROJECT_ROOT / "config" / "apps.json"))
     parser.add_argument("--out-dir", default=str(PROJECT_ROOT / "runs" / f"planner_sanity_{datetime.now().strftime('%Y%m%d_%H%M%S')}"))
     parser.add_argument("--modes", default="steward_serial,agentos_parallel")
@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     load_env_file(PROJECT_ROOT / ".env")
     load_env_file(PROJECT_ROOT.parent / "agent_ipc_mvp" / ".env")
     args = parse_args(argv)
-    suite_path = PROJECT_ROOT / "benchmarks" / "tasks" / f"{args.task_suite}.json"
+    suite_path = PROJECT_ROOT / "config" / "tasks" / f"{args.task_suite}.json"
     modes = tuple(item.strip() for item in args.modes.split(",") if item.strip())
     tasks = tuple(item.strip() for item in (args.tasks or "").split(",") if item.strip())
     report_path = run_planner_sanity(

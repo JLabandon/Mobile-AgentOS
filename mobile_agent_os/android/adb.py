@@ -119,6 +119,32 @@ class AdbClient:
         args += ["-n", component]
         return self.shell(*args, check=True, timeout=30)
 
+    def task_hosting_displays(self) -> list[AndroidDisplayInfo]:
+        return [
+            display
+            for display in self.list_displays()
+            if display.display_id != 0 and display.surfaceflinger_id and display.can_host_tasks
+        ]
+
+    def require_task_hosting_displays(self, count: int) -> list[AndroidDisplayInfo]:
+        displays = self.task_hosting_displays()
+        if len(displays) < count:
+            available = [
+                {
+                    "display_id": display.display_id,
+                    "name": display.name,
+                    "surfaceflinger_id": display.surfaceflinger_id,
+                    "can_host_tasks": display.can_host_tasks,
+                }
+                for display in self.list_displays()
+                if display.display_id != 0
+            ]
+            raise AdbError(
+                f"expected {count} task-hosting secondary displays, found {len(displays)}; "
+                f"secondary displays={available}"
+            )
+        return displays[:count]
+
     def force_stop(self, package_name: str) -> subprocess.CompletedProcess[str]:
         return self.shell("am", "force-stop", package_name, timeout=20)
 
@@ -129,12 +155,16 @@ class AdbClient:
         command = " ".join(shlex.quote(arg) for arg in args)
         return self.shell(command, check=True, timeout=30)
 
-    def dump_ui(self, out_path: Path) -> Path:
+    def dump_ui(self, out_path: Path, *, display_id: int | None = None) -> Path:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         last_error = ""
         for _ in range(3):
             self.shell("rm", "-f", REMOTE_UI, timeout=10)
-            dump_proc = self.shell("uiautomator", "dump", REMOTE_UI, timeout=20)
+            args = ["uiautomator", "dump"]
+            if display_id is not None:
+                args.extend(["--display", str(display_id)])
+            args.append(REMOTE_UI)
+            dump_proc = self.shell(*args, timeout=20)
             dump_output = f"{dump_proc.stdout}\n{dump_proc.stderr}"
             if dump_proc.returncode != 0 or "ERROR:" in dump_output:
                 last_error = f"failed to dump UI\nstdout={dump_proc.stdout}\nstderr={dump_proc.stderr}"
@@ -172,6 +202,10 @@ class AdbClient:
             )
         if proc.returncode != 0:
             raise AdbError(f"failed to capture display {display_id}: {proc.stderr.decode('utf-8', errors='replace')}")
+        header = out_path.read_bytes()[:8]
+        if not (header.startswith(b"\x89PNG\r\n\x1a\n") or header.startswith(b"\xff\xd8\xff")):
+            preview = out_path.read_text(encoding="utf-8", errors="replace")[:160]
+            raise AdbError(f"failed to capture display {display_id}: invalid image output: {preview}")
         return out_path
 
     def tap(self, x: int, y: int) -> subprocess.CompletedProcess[str]:
@@ -237,12 +271,12 @@ class AdbClient:
         display_text = self.shell("dumpsys", "display", timeout=30).stdout
         stack_text = self.shell("am", "stack", "list", timeout=30).stdout
         sf_text = self.shell("dumpsys", "SurfaceFlinger", "--display-id", timeout=20).stdout
-        sf_by_name = self._parse_surfaceflinger_displays(sf_text)
+        sf_by_key = self._parse_surfaceflinger_displays(sf_text)
         task_by_display = self._parse_stack_displays(stack_text)
-        infos = self._parse_logical_displays(display_text, sf_by_name, task_by_display)
+        infos = self._parse_logical_displays(display_text, sf_by_key, task_by_display)
         if infos:
             return infos
-        return self._fallback_parse_display_devices(display_text, sf_by_name, task_by_display)
+        return self._fallback_parse_display_devices(display_text, sf_by_key, task_by_display)
 
     def package_display_ids(self) -> dict[str, list[int]]:
         proc = self.shell("dumpsys", "activity", "activities", timeout=30)
@@ -263,7 +297,7 @@ class AdbClient:
     def _parse_logical_displays(
         self,
         text: str,
-        sf_by_name: dict[str, str],
+        sf_by_key: dict[str, str],
         task_by_display: dict[int, dict[str, str]],
     ) -> list[AndroidDisplayInfo]:
         logical = text.split("Logical Displays:", 1)
@@ -284,6 +318,7 @@ class AdbClient:
             size_match = re.search(r"real\s+(\d+)\s+x\s+(\d+)", line)
             kind_match = re.search(r"type\s+([A-Z]+)", line)
             unique_match = re.search(r'uniqueId\s+"([^"]+)"', line)
+            unique_id = unique_match.group(1) if unique_match else ""
             task = task_by_display.get(display_id, {})
             infos.append(
                 AndroidDisplayInfo(
@@ -292,11 +327,11 @@ class AdbClient:
                     height=int(size_match.group(2)) if size_match else None,
                     kind=kind_match.group(1).lower() if kind_match else "",
                     name=name,
-                    unique_id=unique_match.group(1) if unique_match else "",
+                    unique_id=unique_id,
                     can_host_tasks="canHostTasks true" in line or display_id in task_by_display,
                     has_content=bool(task.get("top_activity")),
                     top_activity=str(task.get("top_activity", "")),
-                    surfaceflinger_id=sf_by_name.get(name),
+                    surfaceflinger_id=sf_by_key.get(unique_id) or sf_by_key.get(name),
                 )
             )
         return sorted(infos, key=lambda item: item.display_id)
@@ -304,7 +339,7 @@ class AdbClient:
     def _fallback_parse_display_devices(
         self,
         text: str,
-        sf_by_name: dict[str, str],
+        sf_by_key: dict[str, str],
         task_by_display: dict[int, dict[str, str]],
     ) -> list[AndroidDisplayInfo]:
         infos: list[AndroidDisplayInfo] = []
@@ -318,6 +353,7 @@ class AdbClient:
             display_id = int(id_match.group(1))
             size_match = re.search(r"(\d+)\s+x\s+(\d+)", line)
             unique_match = re.search(r'uniqueId="([^"]+)"', line)
+            unique_id = unique_match.group(1) if unique_match else ""
             type_match = re.search(r"type\s+([A-Z]+)", line)
             task = task_by_display.get(display_id, {})
             name = name_match.group(1)
@@ -328,11 +364,11 @@ class AdbClient:
                     height=int(size_match.group(2)) if size_match else None,
                     kind=type_match.group(1).lower() if type_match else "",
                     name=name,
-                    unique_id=unique_match.group(1) if unique_match else "",
+                    unique_id=unique_id,
                     can_host_tasks=display_id in task_by_display,
                     has_content=bool(task.get("top_activity")),
                     top_activity=str(task.get("top_activity", "")),
-                    surfaceflinger_id=sf_by_name.get(name),
+                    surfaceflinger_id=sf_by_key.get(unique_id) or sf_by_key.get(name),
                 )
             )
         return sorted(infos, key=lambda item: item.display_id)
@@ -358,7 +394,11 @@ class AdbClient:
         for line in text.splitlines():
             match = re.search(r'Display\s+(\d+).*displayName="([^"]+)"', line)
             if match:
-                result[match.group(2)] = match.group(1)
+                sf_id = match.group(1)
+                result.setdefault(match.group(2), sf_id)
+                unique_match = re.search(r'uniqueId="([^"]+)"', line)
+                if unique_match:
+                    result[unique_match.group(1)] = sf_id
         return result
 
     def is_keyboard_visible(self) -> bool:

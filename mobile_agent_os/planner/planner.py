@@ -72,10 +72,9 @@ class Planner:
         app_lines = []
         for agent in self.agents.values():
             config = agent.config
-            guidelines = "; ".join(config.task_guidelines) if config.task_guidelines else "none"
             app_lines.append(
                 f"- {config.name}: {config.label}; capabilities: {', '.join(config.capabilities) or 'none'}; "
-                f"description: {config.description or 'none'}; expertise_memory: {guidelines}"
+                f"description: {config.description or 'none'}"
             )
         user = (
             f"User goal:\n{configured.goal}\n\n"

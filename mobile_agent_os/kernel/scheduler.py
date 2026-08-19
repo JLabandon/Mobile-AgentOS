@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .jobs import JobResult, JobType
+from .scheduler_policy import FifoSchedulingPolicy, JobCandidate, ResourceSnapshot, SchedulerPolicy, SchedulerSnapshot
 
 
 class ScheduledRunStatus(StrEnum):
@@ -81,6 +82,7 @@ class QueueItem:
     run_id: str | None = None
     job_type: JobType | None = None
     ipc: IPCSpec | None = None
+    state_step: int = 0
     token: int = field(default=0)
 
 
@@ -136,6 +138,9 @@ class FifoJobScheduler:
         resource_capacity: dict[str, int] | None = None,
         service_agents: dict[str, Any] | None = None,
         service_capacity: dict[str, int] | None = None,
+        final_run_id: str = "",
+        policy: SchedulerPolicy | None = None,
+        duration_estimates: dict[str, float] | None = None,
     ) -> None:
         self.executor = executor
         self.reporter = reporter
@@ -145,6 +150,9 @@ class FifoJobScheduler:
         self.resource_capacity = resource_capacity or {}
         self.service_agents = service_agents or {}
         self.service_capacity = service_capacity or {}
+        self.final_run_id = final_run_id
+        self.policy = policy or FifoSchedulingPolicy()
+        self.duration_estimates = duration_estimates or {}
 
     def run(self, *, specs: list[AgentRunSpec], ipc_specs: list[IPCSpec]) -> ScheduledResult:
         self.reporter.state_event(
@@ -172,8 +180,12 @@ class FifoJobScheduler:
         queued: set[tuple[str, str]] = set()
         running: dict[Future[JobResult], tuple[QueueItem, list[str]]] = {}
         leased: dict[str, list[QueueItem]] = {}
+        persistent_leases: dict[str, list[str]] = {}
         service_owners: dict[str, set[str]] = {}
+        service_instance_counters: dict[str, int] = {}
         late_bound_counter = 0
+        terminal_success = False
+        terminal_reason = ""
         token = 0
 
         def resource_key(name: str, scope: object = "global") -> str:
@@ -185,13 +197,114 @@ class FifoJobScheduler:
             assert item.job_type is not None and item.run_id is not None
             state = states[item.run_id]
             display_id = getattr(state.spec.agent, "display_id", "none")
-            if item.job_type == JobType.OBSERVATION:
-                return [resource_key("display_observation", display_id)]
             if item.job_type == JobType.THINKING:
                 return [resource_key("llm_worker", "pool")]
+            if display_id == 0 and item.job_type in {JobType.OBSERVATION, JobType.ACTION}:
+                resources = [resource_key("foreground_display", "primary")]
+            else:
+                resources = []
             if item.job_type == JobType.ACTION:
-                return [resource_key("display_input", display_id)]
+                action = state.pending_action or {}
+                if str(action.get("action", "")).lower() in {"input_text", "type_text", "input"}:
+                    resources.append(resource_key("ime", "global"))
+            if resources:
+                return resources
             return []
+
+        def duration_key(item: QueueItem) -> str:
+            if item.kind == "ipc":
+                return JobType.IPC_DELIVERY.value
+            if item.run_id is None or item.job_type is None:
+                return "unknown"
+            state = states[item.run_id]
+            agent_name = str(getattr(state.spec.agent, "name", item.run_id))
+            return f"{agent_name}:{item.job_type.value}"
+
+        def estimated_duration(item: QueueItem) -> float:
+            return float(
+                self.duration_estimates.get(
+                    duration_key(item),
+                    self.duration_estimates.get(item.job_type.value if item.job_type else item.kind, 1.0),
+                )
+            )
+
+        def candidate_for(item: QueueItem) -> JobCandidate:
+            if item.kind == "ipc" and item.ipc is not None:
+                return JobCandidate(
+                    token=item.token,
+                    kind=item.kind,
+                    run_id=item.ipc.request_id,
+                    agent_id="runtime",
+                    phase="ipc_delivery",
+                    job_type=JobType.IPC_DELIVERY.value,
+                    resources=tuple(resources_for(item)),
+                    estimated_duration_s=estimated_duration(item),
+                )
+            if item.kind == "agent" and item.run_id is not None and item.job_type is not None:
+                state = states[item.run_id]
+                return JobCandidate(
+                    token=item.token,
+                    kind=item.kind,
+                    run_id=item.run_id,
+                    agent_id=str(getattr(state.spec.agent, "name", item.run_id)),
+                    phase=state.spec.phase,
+                    job_type=item.job_type.value,
+                    step=item.state_step,
+                    depends_on=state.spec.depends_on,
+                    resources=tuple(resources_for(item)),
+                    estimated_duration_s=estimated_duration(item),
+                )
+            return JobCandidate(token=item.token, kind=item.kind, estimated_duration_s=estimated_duration(item))
+
+        def scheduler_snapshot(items: list[QueueItem]) -> SchedulerSnapshot:
+            resource_names = set(self.resource_capacity)
+            for item in items:
+                resource_names.update(resources_for(item))
+            return SchedulerSnapshot(
+                candidates=tuple(candidate_for(item) for item in items),
+                resources={
+                    resource: ResourceSnapshot(
+                        name=resource,
+                        capacity=self.resource_capacity.get(resource, 1),
+                        leased=len(leased.get(resource, [])),
+                        persistent_leased=len(persistent_leases.get(resource, [])),
+                    )
+                    for resource in sorted(resource_names)
+                },
+                completed_runs=frozenset(outcomes),
+                running_jobs=len(running),
+                max_workers=self.max_workers,
+            )
+
+        def apply_policy_order() -> None:
+            if len(queue) < 2:
+                return
+            items = list(queue)
+            by_token = {item.token: item for item in items}
+            ordered_candidates = self.policy.order(scheduler_snapshot(items))
+            ordered_items = [by_token[candidate.token] for candidate in ordered_candidates if candidate.token in by_token]
+            if len(ordered_items) != len(items):
+                ordered_items = sorted(items, key=lambda item: item.token)
+            queue.clear()
+            queue.extend(ordered_items)
+            self.reporter.event(
+                "scheduler_policy_decision",
+                runtime=self.mode,
+                policy=self.policy.name,
+                ordered_tokens=[item.token for item in ordered_items],
+                ordered_jobs=[candidate_for(item).__dict__ for item in ordered_items],
+            )
+
+        def persistent_resource_available(resource: str) -> bool:
+            return len(persistent_leases.get(resource, [])) < self.resource_capacity.get(resource, 1)
+
+        def acquire_persistent_resource(resource: str, owner: str, reason: str) -> bool:
+            if not persistent_resource_available(resource):
+                self.reporter.event("resource_blocked", runtime=self.mode, resource=resource, owner=owner, reason=reason)
+                return False
+            persistent_leases.setdefault(resource, []).append(owner)
+            self.reporter.event("resource_acquire", runtime=self.mode, resource=resource, owner=owner, reason=reason)
+            return True
 
         def agent_name_for(run_id: str) -> str:
             state = states[run_id]
@@ -210,10 +323,18 @@ class FifoJobScheduler:
             if len(owners) >= capacity:
                 owner = sorted(owners)[0] if owners else ""
                 self.reporter.event("scheduler_blocked_service_busy", runtime=self.mode, agent=service_name, run_id=run_id, owner_run_id=owner, capacity=capacity)
-                self.reporter.state_event(service_name, "QUEUED_FOR_AGENT", runtime=self.mode, run_id=run_id, owner_run_id=owner, capacity=capacity)
+                self.reporter.event("service_request_waiting", runtime=self.mode, agent=service_name, run_id=run_id, owner_run_id=owner, capacity=capacity)
                 return False
+            uses_parallel_instances = service_name in self.service_capacity and capacity > 1
             instance_index = len(owners)
-            if instance_index > 0:
+            if uses_parallel_instances:
+                instance_index = service_instance_counters.get(service_name, 0)
+            if uses_parallel_instances or instance_index > 0:
+                slot_resource = resource_key("display_slot", "task_hosting")
+                if not acquire_persistent_resource(slot_resource, run_id, "create_app_instance"):
+                    self.reporter.event("service_instance_unavailable", runtime=self.mode, agent=service_name, run_id=run_id, reason="display_slot_unavailable")
+                    self.reporter.event("service_request_waiting", runtime=self.mode, agent=service_name, run_id=run_id, reason="display_slot_unavailable", capacity=capacity)
+                    return False
                 factory = getattr(self.executor, "create_agent_instance", None)
                 if factory is None:
                     self.reporter.event("service_instance_unavailable", runtime=self.mode, agent=service_name, run_id=run_id, reason="executor_has_no_instance_factory")
@@ -225,6 +346,7 @@ class FifoJobScheduler:
                     return False
                 state.spec = replace(state.spec, agent=instance_agent)
                 state.service_instance_index = instance_index
+                service_instance_counters[service_name] = max(service_instance_counters.get(service_name, 0), instance_index + 1)
                 self.reporter.event(
                     "service_instance_created",
                     runtime=self.mode,
@@ -261,16 +383,50 @@ class FifoJobScheduler:
                     instance_agent=display_name_for(run_id),
                     instance_index=states[run_id].service_instance_index,
                 )
+            for resource, resource_owners in list(persistent_leases.items()):
+                kept = [owner for owner in resource_owners if owner != run_id]
+                if len(kept) == len(resource_owners):
+                    continue
+                if kept:
+                    persistent_leases[resource] = kept
+                else:
+                    persistent_leases.pop(resource, None)
+                self.reporter.event("resource_release", runtime=self.mode, resource=resource, owner=run_id, reason="service_context_finished")
+
+        def stop_after_final_completion(run_id: str, evidence: str) -> None:
+            nonlocal terminal_success, terminal_reason
+            if not self.final_run_id:
+                return
+            if run_id != self.final_run_id:
+                return
+            terminal_success = True
+            terminal_reason = evidence
+            queue.clear()
+            self.reporter.event(
+                "runtime_final_completion_oracle_matched",
+                runtime=self.mode,
+                final_run_id=run_id,
+                evidence=evidence,
+            )
+            self.reporter.state_event(
+                "runtime",
+                "DONE",
+                runtime=self.mode,
+                success=True,
+                reason=evidence,
+            )
 
         def serial_allows(run_id: str) -> bool:
             if not self.serial_order:
+                return True
+            if run_id not in self.serial_order:
                 return True
             for previous in self.serial_order:
                 if previous == run_id:
                     return True
                 if previous not in outcomes:
                     return False
-            return run_id not in self.serial_order
+            return True
 
         def dependencies_satisfied(state: AgentRunState) -> bool:
             for dependency in state.spec.depends_on:
@@ -294,6 +450,34 @@ class FifoJobScheduler:
 
         def next_job_type(state: AgentRunState) -> JobType | None:
             if state.step > state.spec.max_steps:
+                completion_check = getattr(self.executor, "completion_check", None)
+                evidence = completion_check(state.spec.agent) if callable(completion_check) else None
+                if evidence:
+                    state.status = ScheduledRunStatus.DONE
+                    state.message = evidence
+                    outcomes[state.spec.run_id] = ScheduledOutcome(state.spec.run_id, True, state.message, state.spec.max_steps)
+                    agent_name = getattr(state.spec.agent, "name", state.spec.run_id)
+                    self.reporter.event(
+                        "completion_oracle_matched",
+                        runtime=self.mode,
+                        agent=agent_name,
+                        run_id=state.spec.run_id,
+                        evidence=evidence,
+                        timing="max_steps_boundary",
+                    )
+                    self.reporter.state_event(
+                        agent_name,
+                        "DONE",
+                        runtime=self.mode,
+                        phase=state.spec.phase,
+                        display_id=getattr(state.spec.agent, "display_id", None),
+                        reason=evidence,
+                    )
+                    for ipc in ipc_by_source.get(state.spec.run_id, []):
+                        enqueue_ipc(ipc)
+                    release_service_if_owner(state.spec.run_id)
+                    stop_after_final_completion(state.spec.run_id, evidence)
+                    return None
                 state.status = ScheduledRunStatus.FAILED
                 state.error = "max steps reached"
                 outcomes[state.spec.run_id] = ScheduledOutcome(state.spec.run_id, False, state.error, state.spec.max_steps)
@@ -331,7 +515,7 @@ class FifoJobScheduler:
                 return
             state.status = ScheduledRunStatus.READY
             token += 1
-            queue.append(QueueItem("agent", run_id=run_id, job_type=job_type, token=token))
+            queue.append(QueueItem("agent", run_id=run_id, job_type=job_type, state_step=state.step, token=token))
             queued.add(key)
             self.reporter.event("job_ready", runtime=self.mode, run_id=run_id, job_type=job_type.value, token=token)
 
@@ -352,11 +536,26 @@ class FifoJobScheduler:
 
         def submit_ready(pool: ThreadPoolExecutor) -> None:
             postponed: deque[QueueItem] = deque()
+            apply_policy_order()
             while queue and len(running) < self.max_workers:
                 item = queue.popleft()
                 if item.kind == "agent" and item.run_id is not None and item.job_type is not None:
                     queued.discard((item.run_id, item.job_type.value))
                     if item.run_id in outcomes:
+                        continue
+                    state = states[item.run_id]
+                    current_job_type = next_job_type(state)
+                    if state.step != item.state_step or current_job_type != item.job_type:
+                        self.reporter.event(
+                            "stale_queue_item_discarded",
+                            runtime=self.mode,
+                            token=item.token,
+                            run_id=item.run_id,
+                            queued_job_type=item.job_type.value,
+                            queued_step=item.state_step,
+                            current_job_type=current_job_type.value if current_job_type else "",
+                            current_step=state.step,
+                        )
                         continue
                 if item.kind == "ipc" and item.ipc is not None:
                     queued.discard((item.ipc.request_id, "ipc"))
@@ -366,7 +565,7 @@ class FifoJobScheduler:
                 blocked = [
                     resource
                     for resource in needed
-                    if len(leased.get(resource, [])) >= self.resource_capacity.get(resource, 1)
+                    if len(leased.get(resource, [])) + len(persistent_leases.get(resource, [])) >= self.resource_capacity.get(resource, 1)
                 ]
                 if blocked:
                     self.reporter.event("job_blocked_resource", runtime=self.mode, token=item.token, resources=needed)
@@ -376,6 +575,8 @@ class FifoJobScheduler:
                     continue
                 for resource in needed:
                     leased.setdefault(resource, []).append(item)
+                if item.kind == "agent" and item.run_id is not None:
+                    states[item.run_id].status = ScheduledRunStatus.RUNNING
                 future = pool.submit(run_queue_item, item)
                 running[future] = (item, needed)
             queue.extendleft(reversed(postponed))
@@ -498,8 +699,11 @@ class FifoJobScheduler:
             assert item.run_id is not None and item.job_type is not None
             state = states[item.run_id]
             spec = state.spec
-            state.status = ScheduledRunStatus.RUNNING
-            if spec.launch and not state.launched and item.job_type == JobType.OBSERVATION:
+            if (
+                spec.launch
+                and item.job_type == JobType.OBSERVATION
+                and (not state.launched or getattr(spec.agent, "display_id", None) == 0)
+            ):
                 self.executor.launch_agent(spec.agent)
                 state.launched = True
             if item.job_type == JobType.OBSERVATION:
@@ -566,6 +770,7 @@ class FifoJobScheduler:
                     for ipc in ipc_by_source.get(spec.run_id, []):
                         enqueue_ipc(ipc)
                     release_service_if_owner(spec.run_id)
+                    stop_after_final_completion(spec.run_id, state.message)
                     return
                 if name == "fail":
                     state.status = ScheduledRunStatus.FAILED
@@ -590,6 +795,32 @@ class FifoJobScheduler:
                 state.pending_action = None
                 state.settle_needed = True
             elif item.job_type == JobType.SETTLE_WAIT:
+                completion_check = getattr(self.executor, "completion_check", None)
+                evidence = completion_check(spec.agent) if callable(completion_check) else None
+                if evidence:
+                    state.status = ScheduledRunStatus.DONE
+                    state.message = evidence
+                    outcomes[spec.run_id] = ScheduledOutcome(spec.run_id, True, state.message, state.step)
+                    self.reporter.event(
+                        "completion_oracle_matched",
+                        runtime=self.mode,
+                        agent=agent_name,
+                        run_id=spec.run_id,
+                        evidence=evidence,
+                    )
+                    self.reporter.state_event(
+                        agent_name,
+                        "DONE",
+                        runtime=self.mode,
+                        phase=spec.phase,
+                        display_id=getattr(spec.agent, "display_id", None),
+                        reason=evidence,
+                    )
+                    for ipc in ipc_by_source.get(spec.run_id, []):
+                        enqueue_ipc(ipc)
+                    release_service_if_owner(spec.run_id)
+                    stop_after_final_completion(spec.run_id, evidence)
+                    return
                 state.settle_needed = False
                 state.last_screenshot = None
                 state.step += 1
@@ -620,7 +851,7 @@ class FifoJobScheduler:
 
         enqueue_newly_ready()
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            while queue or running:
+            while (queue or running) and not terminal_success:
                 self.reporter.state_event(
                     "runtime",
                     "SCHEDULING",
@@ -663,6 +894,8 @@ class FifoJobScheduler:
                         finish_agent_job(item, result)
                 enqueue_newly_ready()
 
+        if terminal_success:
+            return ScheduledResult(True, outcomes, terminal_reason)
         failed = [outcome for outcome in outcomes.values() if not outcome.ok]
         missing = [run_id for run_id in states if run_id not in outcomes]
         if failed:

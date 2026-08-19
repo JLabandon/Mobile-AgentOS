@@ -18,7 +18,7 @@ def load_app_configs(path: Path) -> dict[str, AppConfig]:
             launch=dict(value["launch"]),
             capabilities=tuple(value.get("capabilities", [])),
             description=str(value.get("description", "")),
-            task_guidelines=tuple(value.get("task_guidelines", [])),
+            configured_long_term_memory=tuple(value.get("long_term_memory", [])),
         )
         for name, value in raw.items()
     }

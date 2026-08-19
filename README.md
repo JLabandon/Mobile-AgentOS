@@ -51,12 +51,12 @@ config/apps.json
 
 Create a `.env` file with `DEEPSEEK_API_KEY` for planning and the legacy XML/DeepSeek path. The VLM scheduler uses `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 
-Legacy benchmark examples:
+XML/DeepSeek benchmark examples:
 
 ```bash
 ./run_mobile_agent_os.sh --runtime agentos_parallel --task calendar_gmail_meeting_detail
 ./run_mobile_agent_os.sh --runtime steward_serial --task calendar_gmail_meeting_detail
-./run_mobile_agent_os.sh --runtimes steward_serial,agentos_parallel --task-suite curated_core
+./run_mobile_agent_os.sh --runtimes steward_serial,agentos_parallel --task-suite core_benchmark
 ```
 
 VLM scheduler examples:
@@ -86,4 +86,4 @@ A benchmark suite also writes:
 
 ## Notes
 
-Real Android VirtualDisplay execution is partially supported by platform tools, but reliable per-display UI XML observation is not available through plain `uiautomator dump`. The current real-app benchmark therefore uses a foreground observation lane while preserving split-phase model thinking, scheduling, resource records, and IPC traceability.
+Real Android multi-display execution uses task-hosting display slots exposed by the device or emulator. These slots can host Android activities, accept display-scoped input, and provide per-display screenshots. The runtime keeps display provisioning behind the Android substrate layer, while scheduling, IPC, registry state, and AppAgent lifecycle remain independent of the specific device setup.

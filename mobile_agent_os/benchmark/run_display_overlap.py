@@ -50,6 +50,10 @@ def _screenshot_is_informative(path: Path) -> tuple[bool, str]:
 def _capture_display(adb: AdbClient, *, display_id: int, surfaceflinger_id: str | None, out_path: Path) -> Path:
     if display_id == 0:
         return adb.screenshot(out_path)
+    try:
+        return adb.screenshot_display(display_id, out_path)
+    except Exception:
+        pass
     if surfaceflinger_id:
         return adb.screenshot_display(surfaceflinger_id, out_path)
     return adb.screenshot_display(display_id, out_path)
@@ -140,17 +144,17 @@ def run_probe(*, task: str, apps: tuple[str, str], run_root: Path, mode: str) ->
     adb = AdbClient()
     adb.require_device()
     configs = load_app_configs(PROJECT_ROOT / "config" / "apps.json")
-    displays = adb.list_displays()
-    virtual_slots = [display.display_id for display in displays if display.display_id != 0 and display.can_host_tasks]
-    if not virtual_slots:
-        raise RuntimeError("no task-hosting virtual display found; create helper VirtualDisplays before running this probe")
+    displays = adb.require_task_hosting_displays(2)
+    task_hosting_slots = [display.display_id for display in displays]
+    if not task_hosting_slots:
+        raise RuntimeError("no task-hosting secondary display found")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = run_root / f"{task}_{mode}_display_overlap_{timestamp}"
     reporter = RunReporter(run_dir)
     reporter.event("runtime_start", runtime=mode, task=task, mode="display_overlap_probe")
 
-    requested_displays = virtual_slots[:2] if len(virtual_slots) >= 2 else [0, virtual_slots[0]]
+    requested_displays = task_hosting_slots[:2] if len(task_hosting_slots) >= 2 else [0, task_hosting_slots[0]]
     probe_agents: list[ProbeAgent] = []
     contexts = {
         apps[0]: "Requester side of a cross-app task. It may need information from a peer app before continuing.",

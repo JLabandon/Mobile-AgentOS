@@ -1,6 +1,12 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="edu.agentos.mockpayment">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="edu.agentos.mockpayment"
+    android:versionCode="2"
+    android:versionName="2.0">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" />
     <application android:theme="@style/AppTheme" android:label="Mock Payment">
+        <provider
+            android:name=".PaymentStatusProvider"
+            android:authorities="edu.agentos.mockpayment.status"
+            android:exported="true" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
