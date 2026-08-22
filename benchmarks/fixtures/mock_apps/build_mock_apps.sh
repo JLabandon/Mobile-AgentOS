@@ -52,15 +52,17 @@ EOF
 
 build_app mock_shop edu.agentos.mockshop
 build_app mock_payment edu.agentos.mockpayment
-build_workflow_app edu.agentos.mockplanner "Mock Planner" planner
-build_workflow_app edu.agentos.mocktaska "Mock Task A" task_a
-build_workflow_app edu.agentos.mocktaskb "Mock Task B" task_b
-build_workflow_app edu.agentos.mockplannerlocal "Mock Planner Local" planner_local
-build_workflow_app edu.agentos.mocktaskalocal "Mock Task A Local" task_a_local
-build_workflow_app edu.agentos.mocktaskblocal "Mock Task B Local" task_b_local
+build_app mock_notes edu.agentos.mocknotes
+build_workflow_app edu.agentos.mockplanner "Service Case Desk" planner
+build_workflow_app edu.agentos.mocktaska "Procurement Portal" task_a
+build_workflow_app edu.agentos.mocktaskb "Shipping Portal" task_b
+build_workflow_app edu.agentos.mockplannerlocal "Clinic Check-In" planner_local
+build_workflow_app edu.agentos.mocktaskalocal "Inventory Request" task_a_local
+build_workflow_app edu.agentos.mocktaskblocal "Compliance Filing" task_b_local
 
 echo "$OUT/edu.agentos.mockshop.apk"
 echo "$OUT/edu.agentos.mockpayment.apk"
+echo "$OUT/edu.agentos.mocknotes.apk"
 echo "$OUT/edu.agentos.mockplanner.apk"
 echo "$OUT/edu.agentos.mocktaska.apk"
 echo "$OUT/edu.agentos.mocktaskb.apk"

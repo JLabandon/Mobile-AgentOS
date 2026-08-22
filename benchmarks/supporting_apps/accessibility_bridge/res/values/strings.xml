@@ -1,0 +1,3 @@
+<resources>
+    <string name="service_description">Reads visible UI structure from task-hosting displays for AgentOS experiments.</string>
+</resources>

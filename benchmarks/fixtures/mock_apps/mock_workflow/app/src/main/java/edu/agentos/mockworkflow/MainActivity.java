@@ -79,49 +79,61 @@ public class MainActivity extends Activity {
     }
 
     private String titleText() {
-        if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return "Task A Workspace";
-        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return "Task B Workspace";
-        return "Planner Workspace";
+        if ("task_a".equals(scenario)) return "Procurement Portal";
+        if ("task_b".equals(scenario)) return "Shipping Portal";
+        if ("planner_local".equals(scenario)) return "Clinic Check-In";
+        if ("task_a_local".equals(scenario)) return "Inventory Request";
+        if ("task_b_local".equals(scenario)) return "Compliance Filing";
+        return "Service Case Desk";
     }
 
     private String missingDetailText() {
-        if ("planner_local".equals(scenario)) return "Appointment: Alice, tomorrow 3:00 PM\nReference location: Googleplex\nRequired field: location";
-        if ("task_a_local".equals(scenario)) return "Project: Alpha\nReference code: ALPHA-42\nRequired field: project code";
-        if ("task_b_local".equals(scenario)) return "Project: Beta\nReference code: BETA-73\nRequired field: project code";
-        if ("task_a".equals(scenario)) return "Project: Alpha\nRequired field: project code";
-        if ("task_b".equals(scenario)) return "Project: Beta\nRequired field: project code";
-        return "Appointment: Alice, tomorrow 3:00 PM\nRequired field: location";
+        if ("planner_local".equals(scenario)) return "Patient: Alice\nVisit time: tomorrow 3:00 PM\nReference location: Googleplex\nRequired field: clinic location";
+        if ("task_a_local".equals(scenario)) return "Item: Lab sensor pack\nInventory reference: ALPHA-42\nRequired field: inventory reference";
+        if ("task_b_local".equals(scenario)) return "Filing: Export compliance memo\nCompliance reference: BETA-73\nRequired field: compliance reference";
+        if ("task_a".equals(scenario)) return "Purchase request: Project Alpha equipment\nRequired field: procurement project code";
+        if ("task_b".equals(scenario)) return "Shipment request: Project Beta prototype kit\nRequired field: shipping project code";
+        return "Case: R-482\nRequired field: verification token";
     }
 
     private String completedDetailText() {
-        if ("task_a".equals(scenario)) return "Project: Alpha\nProject code accepted";
-        if ("task_b".equals(scenario)) return "Project: Beta\nProject code accepted";
-        return "Appointment: Alice, tomorrow 3:00 PM\nLocation accepted";
+        if ("task_a".equals(scenario)) return "Procurement request: Project Alpha\nProject code accepted";
+        if ("task_b".equals(scenario)) return "Shipping request: Project Beta\nProject code accepted";
+        if ("task_a_local".equals(scenario)) return "Inventory request\nStock code accepted";
+        if ("task_b_local".equals(scenario)) return "Compliance filing\nFiling reference accepted";
+        return "Case R-482\nVerification token accepted";
     }
 
     private String successText() {
-        if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return "Status: Task A complete";
-        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return "Status: Task B complete";
-        return "Status: Appointment complete";
+        if ("task_a".equals(scenario)) return "Status: Procurement request complete";
+        if ("task_b".equals(scenario)) return "Status: Shipping request complete";
+        if ("task_a_local".equals(scenario)) return "Status: Inventory request complete";
+        if ("task_b_local".equals(scenario)) return "Status: Compliance filing complete";
+        return "Status: Service case submitted";
     }
 
     private String buttonText() {
-        if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return "Complete Task A";
-        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return "Complete Task B";
-        return "Complete Appointment";
+        if ("task_a".equals(scenario)) return "Submit Procurement Request";
+        if ("task_b".equals(scenario)) return "Submit Shipping Request";
+        if ("planner_local".equals(scenario)) return "Complete Clinic Check-In";
+        if ("task_a_local".equals(scenario)) return "Submit Inventory Request";
+        if ("task_b_local".equals(scenario)) return "Submit Compliance Filing";
+        return "Submit Service Case";
     }
 
     private String inputHint() {
-        if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return "Enter project code";
-        if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return "Enter project code";
-        return "Enter appointment location";
+        if ("task_a".equals(scenario)) return "Enter procurement project code";
+        if ("task_b".equals(scenario)) return "Enter shipping project code";
+        if ("task_a_local".equals(scenario)) return "Enter inventory reference";
+        if ("task_b_local".equals(scenario)) return "Enter compliance reference";
+        return "Enter verification token";
     }
 
     private boolean matchesExpected(String value) {
         String normalized = value.trim().toLowerCase();
         if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return normalized.equals("alpha-42");
         if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return normalized.equals("beta-73");
-        return normalized.equals("googleplex");
+        return normalized.equals("h9k-27");
     }
 
     private int dp(int value) {

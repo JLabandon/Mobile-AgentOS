@@ -1,59 +1,19 @@
 {
   "pipeline_overlap_independent_forms": {
     "description": "Core benchmark task for phase-level overlap across independent AppAgent jobs.",
-    "goal": "Complete the appointment form and both project forms.",
-    "agents": {
-      "planner_local_agent": "mock_planner_local",
-      "task_a_local_agent": "mock_task_a_local",
-      "task_b_local_agent": "mock_task_b_local"
-    },
-    "max_steps": 3,
-    "success_contains": "task b complete",
-    "clear_packages": [
-      "edu.agentos.mockplannerlocal",
-      "edu.agentos.mocktaskalocal",
-      "edu.agentos.mocktaskblocal"
-    ]
+    "goal": "Complete the clinic check-in, inventory request, and compliance filing."
   },
   "planned_shop_payment_authorization": {
     "description": "Core benchmark task for planned cross-app operation flow.",
-    "goal": "Complete order PX-1042.",
-    "agents": {
-      "shop_agent": "shop",
-      "payment_agent": "payment"
-    },
-    "success_contains": "ready for pickup",
-    "clear_packages": [
-      "edu.agentos.mockshop",
-      "edu.agentos.mockpayment"
-    ]
+    "goal": "Complete order PX-1042."
   },
-  "late_bound_appointment_location": {
+  "late_bound_service_case_token": {
     "description": "Core benchmark task for runtime information request.",
-    "goal": "Complete the appointment.",
-    "agents": {
-      "planner_agent": "mock_planner",
-      "keep_agent": "keep"
-    },
-    "max_steps": 3,
-    "success_contains": "appointment complete",
-    "clear_packages": [
-      "edu.agentos.mockplanner"
-    ]
+    "goal": "Submit the service case record."
   },
   "shared_provider_project_codes": {
     "description": "Core benchmark task for two concurrent tasks contending for one provider AppAgent.",
-    "goal": "Complete both project forms.",
-    "agents": {
-      "task_a_agent": "mock_task_a",
-      "task_b_agent": "mock_task_b",
-      "keep_agent": "keep"
-    },
-    "max_steps": 3,
-    "success_contains": "task b complete",
-    "clear_packages": [
-      "edu.agentos.mocktaska",
-      "edu.agentos.mocktaskb"
-    ]
+    "goal": "Complete the procurement request and the shipping request.",
+    "max_steps": 3
   }
 }

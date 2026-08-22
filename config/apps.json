@@ -79,11 +79,11 @@
       "read_notes",
       "store_notes"
     ],
-    "description": "Notebook and note-taking app. It can store, search, and read user notes. It should answer runtime information requests only with information supported by visible notes or its app memory.",
+    "description": "Note-taking app for creating, browsing, searching, and editing personal notes.",
     "long_term_memory": [
-      "When answering an information request, search or inspect notes related to the request context.",
-      "Return concise information with evidence from visible note text. Do not decide how the requesting app should use the information.",
-      "If the needed information is not visible or cannot be supported by a note, respond with failed status rather than inventing an answer."
+      "Use the request context to search or inspect visible notes.",
+      "Report note content with visible evidence.",
+      "Report unavailable when visible notes do not support a requested result."
     ],
     "launch": {
       "mode": "launcher"
@@ -107,6 +107,43 @@
       ],
       "launch_flags": "0x18000000",
       "evidence": "Android multi-instance probe"
+    }
+  },
+  "notes": {
+    "label": "Notes",
+    "package_candidates": [
+      "edu.agentos.mocknotes"
+    ],
+    "capabilities": [
+      "retrieve_information",
+      "search_notes",
+      "read_notes",
+      "store_notes"
+    ],
+    "description": "Personal note-taking app for creating, browsing, searching, and editing notes.",
+    "long_term_memory": [
+      "Use the request context to search or inspect visible notes.",
+      "Report note content with visible evidence.",
+      "Report unavailable when visible notes do not support a requested result."
+    ],
+    "launch": {
+      "mode": "launcher"
+    },
+    "instance_policy": {
+      "default_mode": "single_service_queue",
+      "supports_parallel_instances": false,
+      "max_parallel_instances": 1,
+      "safe_parallel_request_types": [
+        "read_notes",
+        "search_notes",
+        "retrieve_information"
+      ],
+      "unsafe_parallel_request_types": [
+        "store_notes",
+        "account_mutation"
+      ],
+      "launch_flags": "0x18000000",
+      "evidence": "controlled benchmark app"
     }
   },
   "maps": {
@@ -169,7 +206,7 @@
     }
   },
   "shop": {
-    "label": "Mock Shop",
+    "label": "Campus Store",
     "package_candidates": [
       "edu.agentos.mockshop"
     ],
@@ -186,14 +223,10 @@
     ],
     "launch": {
       "mode": "launcher"
-    },
-    "status_oracle": {
-      "uri": "content://edu.agentos.mockshop.status/status",
-      "success_contains": "ready_for_pickup"
     }
   },
   "payment": {
-    "label": "Mock Payment",
+    "label": "Campus Wallet",
     "package_candidates": [
       "edu.agentos.mockpayment"
     ],
@@ -222,83 +255,75 @@
       "launch_flags": "0x18000000"
     }
   },
-  "mock_planner": {
-    "label": "Mock Planner",
+  "service_case_desk": {
+    "label": "Service Case Desk",
     "package_candidates": [
       "edu.agentos.mockplanner"
     ],
     "capabilities": [
-      "complete_appointment_with_peer_information"
+      "complete_service_case"
     ],
-    "description": "Appointment form app for creating or completing appointments with visible fields such as person, time, and location.",
+    "description": "Service operations app for reviewing and submitting case records.",
     "long_term_memory": [
-      "Inspect visible appointment fields before deciding whether information is missing.",
-      "When required appointment information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
-      "When missing information arrives, enter it into the matching visible field and complete the appointment from visible evidence."
+      "Inspect visible form state before deciding whether information is missing.",
+      "When a required value is unavailable in the current app, consult the registry and request it from an appropriate peer agent.",
+      "When a required value arrives, enter it into the matching visible field and continue from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
-    },
-    "status_oracle": {
-      "uri": "content://edu.agentos.mockplanner.status/status",
-      "success_contains": "Status: Appointment complete"
     }
   },
-  "mock_task_a": {
-    "label": "Mock Task A",
+  "procurement_portal": {
+    "label": "Procurement Portal",
     "package_candidates": [
       "edu.agentos.mocktaska"
     ],
     "capabilities": [
-      "complete_task_a_with_peer_information"
+      "complete_procurement_request"
     ],
-    "description": "Project workflow app for completing a project form with visible project fields.",
+    "description": "Procurement workflow app for completing purchasing requests with visible project and approval-code fields.",
     "long_term_memory": [
-      "Inspect visible project fields before deciding whether information is missing.",
-      "When required project information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
-      "When missing information arrives, enter it into the matching visible field and complete the project form from visible evidence."
+      "Inspect visible procurement fields before deciding whether information is missing.",
+      "When required purchasing or project-code information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
+      "When missing information arrives, enter it into the matching visible field and complete the procurement request from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
     }
   },
-  "mock_task_b": {
-    "label": "Mock Task B",
+  "shipping_portal": {
+    "label": "Shipping Portal",
     "package_candidates": [
       "edu.agentos.mocktaskb"
     ],
     "capabilities": [
-      "complete_task_b_with_peer_information"
+      "complete_shipping_request"
     ],
-    "description": "Project workflow app for completing a project form with visible project fields.",
+    "description": "Shipping workflow app for completing dispatch requests with visible shipment, project, and routing-code fields.",
     "long_term_memory": [
-      "Inspect visible project fields before deciding whether information is missing.",
-      "When required project information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
-      "When missing information arrives, enter it into the matching visible field and complete the project form from visible evidence."
+      "Inspect visible shipping fields before deciding whether information is missing.",
+      "When required shipment or project-code information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
+      "When missing information arrives, enter it into the matching visible field and complete the shipping request from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
     }
   },
-  "mock_planner_local": {
-    "label": "Mock Planner Local",
+  "clinic_checkin": {
+    "label": "Clinic Check-In",
     "package_candidates": [
       "edu.agentos.mockplannerlocal"
     ],
     "capabilities": [
-      "complete_local_appointment_form"
+      "complete_patient_checkin"
     ],
-    "description": "Appointment form app for completing appointments when the required information is visible in the app.",
+    "description": "Clinic check-in app for completing patient visit records.",
     "long_term_memory": [
-      "Use visible appointment details as evidence.",
-      "Enter required visible information into the matching appointment field and complete the appointment from visible evidence."
+      "Inspect visible appointment details as evidence.",
+      "Enter required information into the matching check-in field and complete the appointment from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
-    },
-    "status_oracle": {
-      "uri": "content://edu.agentos.mockplannerlocal.status/status",
-      "success_contains": "Status: Appointment complete"
     },
     "instance_policy": {
       "default_mode": "single_service_queue",
@@ -306,25 +331,21 @@
       "max_parallel_instances": 1
     }
   },
-  "mock_task_a_local": {
-    "label": "Mock Task A Local",
+  "inventory_request": {
+    "label": "Inventory Request",
     "package_candidates": [
       "edu.agentos.mocktaskalocal"
     ],
     "capabilities": [
-      "complete_local_project_form"
+      "complete_inventory_request"
     ],
-    "description": "Project form app for completing project records when the required information is visible in the app.",
+    "description": "Inventory request app for completing stock requests.",
     "long_term_memory": [
-      "Use visible project details as evidence.",
-      "Enter required visible information into the matching project field and complete the project form from visible evidence."
+      "Inspect visible inventory request details as evidence.",
+      "Enter required information into the matching inventory field and complete the request from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
-    },
-    "status_oracle": {
-      "uri": "content://edu.agentos.mocktaskalocal.status/status",
-      "success_contains": "Status: Task A complete"
     },
     "instance_policy": {
       "default_mode": "single_service_queue",
@@ -332,25 +353,21 @@
       "max_parallel_instances": 1
     }
   },
-  "mock_task_b_local": {
-    "label": "Mock Task B Local",
+  "compliance_filing": {
+    "label": "Compliance Filing",
     "package_candidates": [
       "edu.agentos.mocktaskblocal"
     ],
     "capabilities": [
-      "complete_local_project_form"
+      "complete_compliance_filing"
     ],
-    "description": "Project form app for completing project records when the required information is visible in the app.",
+    "description": "Compliance filing app for completing compliance records.",
     "long_term_memory": [
-      "Use visible project details as evidence.",
-      "Enter required visible information into the matching project field and complete the project form from visible evidence."
+      "Inspect visible compliance filing details as evidence.",
+      "Enter required information into the matching compliance field and complete the filing from visible evidence."
     ],
     "launch": {
       "mode": "launcher"
-    },
-    "status_oracle": {
-      "uri": "content://edu.agentos.mocktaskblocal.status/status",
-      "success_contains": "Status: Task B complete"
     },
     "instance_policy": {
       "default_mode": "single_service_queue",

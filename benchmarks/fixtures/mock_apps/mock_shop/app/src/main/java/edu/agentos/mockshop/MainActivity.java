@@ -32,7 +32,7 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(36, 36, 36, 36);
         scroll.addView(root);
-        add(root, "Mock Shop", 30);
+        add(root, "Campus Store", 30);
         add(root, "Available orders", 22);
         storeStatus("catalog", "");
         add(root, "PX-1041: Wireless headphones", 20);
@@ -63,10 +63,10 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(36, 36, 36, 36);
         scroll.addView(root);
-        add(root, "Mock Shop", 30);
+        add(root, "Campus Store", 30);
         add(root, "Order: PX-1042", 22);
         add(root, "Item: USB-C travel hub", 20);
-        add(root, "Merchant: Mock Shop", 20);
+        add(root, "Merchant: Campus Store", 20);
         add(root, "Amount due: $42.80", 20);
         status = add(root, "Order status: payment required", 20);
         nextStep = add(root, "Next step: authorize payment before checkout can finish.", 20);

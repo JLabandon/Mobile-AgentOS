@@ -10,9 +10,6 @@ from pathlib import Path
 
 
 DEFAULT_ADB = os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")
-REMOTE_UI = "/sdcard/window_dump.xml"
-
-
 class AdbError(RuntimeError):
     pass
 
@@ -119,6 +116,21 @@ class AdbClient:
         args += ["-n", component]
         return self.shell(*args, check=True, timeout=30)
 
+    def focus_package_on_display(self, package_name: str, display_id: int) -> subprocess.CompletedProcess[str]:
+        component = self.resolve_activity(package_name)
+        return self.shell(
+            "am",
+            "start",
+            "--display",
+            str(display_id),
+            "--activity-reorder-to-front",
+            "--activity-single-top",
+            "-n",
+            component,
+            check=True,
+            timeout=30,
+        )
+
     def task_hosting_displays(self) -> list[AndroidDisplayInfo]:
         return [
             display
@@ -154,29 +166,6 @@ class AdbClient:
     def launch_shell(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         command = " ".join(shlex.quote(arg) for arg in args)
         return self.shell(command, check=True, timeout=30)
-
-    def dump_ui(self, out_path: Path, *, display_id: int | None = None) -> Path:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        last_error = ""
-        for _ in range(3):
-            self.shell("rm", "-f", REMOTE_UI, timeout=10)
-            args = ["uiautomator", "dump"]
-            if display_id is not None:
-                args.extend(["--display", str(display_id)])
-            args.append(REMOTE_UI)
-            dump_proc = self.shell(*args, timeout=20)
-            dump_output = f"{dump_proc.stdout}\n{dump_proc.stderr}"
-            if dump_proc.returncode != 0 or "ERROR:" in dump_output:
-                last_error = f"failed to dump UI\nstdout={dump_proc.stdout}\nstderr={dump_proc.stderr}"
-                self.settle(0.8)
-                continue
-            proc = self.run("pull", REMOTE_UI, str(out_path), timeout=20)
-            if proc.returncode == 0 and out_path.exists():
-                return out_path
-            last_error = f"failed to pull UI dump\nstdout={proc.stdout}\nstderr={proc.stderr}"
-            self.settle(0.8)
-        raise AdbError(last_error)
-        return out_path
 
     def screenshot(self, out_path: Path) -> Path:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,11 +220,15 @@ class AdbClient:
         escaped = escaped.replace("'", "").replace('"', "")
         return self.shell("input", "-d", str(display_id), "text", escaped, check=True)
 
-    def replace_text(self, text: str, *, max_delete: int = 40) -> None:
-        self.shell("input", "keyevent", "KEYCODE_MOVE_END", timeout=10)
-        for _ in range(max_delete):
-            self.shell("input", "keyevent", "KEYCODE_DEL", timeout=10)
+    def replace_text(self, text: str) -> None:
+        self.shell("input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A", timeout=10)
+        self.shell("input", "keyevent", "KEYCODE_DEL", timeout=10)
         self.input_text(text)
+
+    def replace_text_display(self, display_id: int, text: str) -> None:
+        self.shell("input", "-d", str(display_id), "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A", timeout=10)
+        self.shell("input", "-d", str(display_id), "keyevent", "KEYCODE_DEL", timeout=10)
+        self.input_text_display(display_id, text)
 
     def swipe(self, direction: str) -> subprocess.CompletedProcess[str]:
         presets = {

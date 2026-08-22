@@ -7,3 +7,6 @@ __pycache__/
 runs/
 memory/
 benchmarks/fixtures/mock_apps/build/
+benchmarks/supporting_apps/accessibility_bridge/build/
+benchmarks/supporting_apps/accessibility_bridge/*.apk
+benchmarks/supporting_apps/accessibility_bridge/*.idsig

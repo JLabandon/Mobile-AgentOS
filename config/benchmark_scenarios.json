@@ -1,0 +1,102 @@
+{
+  "tasks": {
+    "pipeline_overlap_independent_forms": {
+      "candidate_apps": {
+        "clinic_agent": "clinic_checkin",
+        "inventory_agent": "inventory_request",
+        "compliance_agent": "compliance_filing"
+      },
+      "success_contains": "compliance filing complete",
+      "evaluator_apps": [
+        "clinic_checkin",
+        "inventory_request",
+        "compliance_filing"
+      ],
+      "clear_packages": [
+        "edu.agentos.mockplannerlocal",
+        "edu.agentos.mocktaskalocal",
+        "edu.agentos.mocktaskblocal",
+        "edu.agentos.mocknotes",
+        "edu.agentos.mockplanner"
+      ]
+    },
+    "planned_shop_payment_authorization": {
+      "candidate_apps": {
+        "shop_agent": "shop",
+        "payment_agent": "payment",
+        "notes_agent": "notes",
+        "procurement_agent": "procurement_portal"
+      },
+      "success_contains": "ready for pickup",
+      "clear_packages": [
+        "edu.agentos.mockshop",
+        "edu.agentos.mockpayment",
+        "edu.agentos.mocknotes",
+        "edu.agentos.mocktaska"
+      ]
+    },
+    "late_bound_service_case_token": {
+      "candidate_apps": {
+        "case_agent": "service_case_desk",
+        "notes_agent": "notes"
+      },
+      "success_contains": "service case submitted",
+      "evaluator_apps": [
+        "service_case_desk"
+      ],
+      "clear_packages": [
+        "edu.agentos.mockplanner",
+        "edu.agentos.mocknotes",
+        "edu.agentos.mockplannerlocal",
+        "edu.agentos.mocktaskalocal"
+      ]
+    },
+    "shared_provider_project_codes": {
+      "candidate_apps": {
+        "procurement_agent": "procurement_portal",
+        "shipping_agent": "shipping_portal",
+        "notes_agent": "notes",
+        "case_agent": "service_case_desk",
+        "compliance_agent": "compliance_filing"
+      },
+      "success_contains": "shipping request complete",
+      "clear_packages": [
+        "edu.agentos.mocktaska",
+        "edu.agentos.mocktaskb",
+        "edu.agentos.mocknotes",
+        "edu.agentos.mockplanner",
+        "edu.agentos.mocktaskblocal"
+      ]
+    }
+  },
+  "app_status_oracles": {
+    "shop": {
+      "uri": "content://edu.agentos.mockshop.status/status",
+      "success_contains": "ready_for_pickup"
+    },
+    "service_case_desk": {
+      "uri": "content://edu.agentos.mockplanner.status/status",
+      "success_contains": "Status: Service case submitted"
+    },
+    "clinic_checkin": {
+      "uri": "content://edu.agentos.mockplannerlocal.status/status",
+      "success_contains": "Status: Appointment complete"
+    },
+    "inventory_request": {
+      "uri": "content://edu.agentos.mocktaskalocal.status/status",
+      "success_contains": "Status: Inventory request complete"
+    },
+    "compliance_filing": {
+      "uri": "content://edu.agentos.mocktaskblocal.status/status",
+      "success_contains": "Status: Compliance filing complete"
+    },
+    "procurement_portal": {
+      "uri": "content://edu.agentos.mocktaska.status/status",
+      "success_contains": "Status: Procurement request complete"
+    },
+    "shipping_portal": {
+      "uri": "content://edu.agentos.mocktaskb.status/status",
+      "success_contains": "Status: Shipping request complete"
+    }
+  }
+}

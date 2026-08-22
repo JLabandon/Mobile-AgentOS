@@ -1,5 +1,3 @@
-"""Planner layer."""
+from .graph_planner import GraphPlanner
 
-from .planner import Planner
-
-__all__ = ["Planner"]
+__all__ = ["GraphPlanner"]

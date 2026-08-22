@@ -1,0 +1,27 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="edu.agentos.accessibilitybridge"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36" />
+
+    <application android:label="AgentOS Accessibility Bridge" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <service
+            android:name=".MultiDisplayAccessibilityService"
+            android:exported="true"
+            android:label="AgentOS Accessibility Bridge"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service" />
+        </service>
+
+        <provider
+            android:name=".SnapshotProvider"
+            android:authorities="edu.agentos.accessibilitybridge.snapshot"
+            android:exported="true" />
+    </application>
+</manifest>
