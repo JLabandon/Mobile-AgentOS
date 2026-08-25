@@ -1,13 +1,13 @@
 from mobile_agent_os.execution import AppAgent, Completed, NeedsExpansion
 from mobile_agent_os.graph_space import ArtifactDraft, Edge, GraphSteward, InitialGraph, NodeStatus, WorkSpec
-from mobile_agent_os.scheduling import FifoScheduler, ResourceTable
+from mobile_agent_os.scheduling import GraphScheduler, ResourceTable
 
 from tests.fakes.runtime import ScriptedExecutor, registry
 
 
 def _runtime():
     steward = GraphSteward(registry())
-    scheduler = FifoScheduler(steward, ResourceTable())
+    scheduler = GraphScheduler(steward, ResourceTable())
     steward.create_initial_graph(InitialGraph("run", "SOURCE", "SINK", (WorkSpec("A", "calendar", "Create appointment"),), (Edge("SOURCE", "A"), Edge("A", "SINK"))))
     scheduler.schedule("run")
     return steward, scheduler

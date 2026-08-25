@@ -99,6 +99,7 @@ public class MainActivity extends Activity {
     private String completedDetailText() {
         if ("task_a".equals(scenario)) return "Procurement request: Project Alpha\nProject code accepted";
         if ("task_b".equals(scenario)) return "Shipping request: Project Beta\nProject code accepted";
+        if ("planner_local".equals(scenario)) return "Patient: Alice\nClinic location accepted";
         if ("task_a_local".equals(scenario)) return "Inventory request\nStock code accepted";
         if ("task_b_local".equals(scenario)) return "Compliance filing\nFiling reference accepted";
         return "Case R-482\nVerification token accepted";
@@ -107,6 +108,7 @@ public class MainActivity extends Activity {
     private String successText() {
         if ("task_a".equals(scenario)) return "Status: Procurement request complete";
         if ("task_b".equals(scenario)) return "Status: Shipping request complete";
+        if ("planner_local".equals(scenario)) return "Status: Appointment complete";
         if ("task_a_local".equals(scenario)) return "Status: Inventory request complete";
         if ("task_b_local".equals(scenario)) return "Status: Compliance filing complete";
         return "Status: Service case submitted";
@@ -131,6 +133,7 @@ public class MainActivity extends Activity {
 
     private boolean matchesExpected(String value) {
         String normalized = value.trim().toLowerCase();
+        if ("planner_local".equals(scenario)) return normalized.equals("googleplex");
         if ("task_a".equals(scenario) || "task_a_local".equals(scenario)) return normalized.equals("alpha-42");
         if ("task_b".equals(scenario) || "task_b_local".equals(scenario)) return normalized.equals("beta-73");
         return normalized.equals("h9k-27");

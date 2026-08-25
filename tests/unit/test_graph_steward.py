@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from mobile_agent_os.graph_space import ArtifactDraft, CheckpointExpansion, Edge, GraphSteward, InitialGraph, NodeStatus, WorkSpec
@@ -123,3 +125,42 @@ def test_completion_gate_rejects_empty_required_artifact_without_publishing_it()
     assert snapshot.artifacts == ()
     assert "has no result value" in (snapshot.node("A").outcome or "")
     assert steward.events("contract")[-1].kind == "completion_rejected"
+
+
+def test_checkpoint_round_trip_restores_artifacts_and_can_continue() -> None:
+    steward = GraphSteward(registry())
+    steward.create_initial_graph(_graph())
+    steward.assign("g1", "A", "AS-A")
+    steward.start("g1", "A", "AS-A")
+    steward.commit_node(
+        "g1",
+        "A",
+        "AS-A",
+        (ArtifactDraft("checkpoint_value", {"value": "saved", "evidence": ["fixture"]}),),
+    )
+    checkpoint = json.loads(json.dumps(steward.export_checkpoint("g1")))
+
+    restored = GraphSteward(registry())
+    snapshot = restored.restore_checkpoint(checkpoint)
+    restored.validate_graph("g1")
+    assert snapshot.version == steward.read("g1").version
+    assert snapshot.node("B").status is NodeStatus.READY
+    assert snapshot.artifacts[0].payload["value"] == "saved"
+
+    restored.assign("g1", "B", "AS-B")
+    restored.start("g1", "B", "AS-B")
+    snapshot = restored.commit_node("g1", "B", "AS-B")
+    assert snapshot.node("SINK").status is NodeStatus.READY
+
+
+def test_checkpoint_rejects_cross_graph_event_before_install() -> None:
+    steward = GraphSteward(registry())
+    steward.create_initial_graph(_graph())
+    checkpoint = steward.export_checkpoint("g1")
+    checkpoint["events"][0]["graph_id"] = "other"
+
+    restored = GraphSteward(registry())
+    with pytest.raises(GraphError, match="another graph"):
+        restored.restore_checkpoint(checkpoint)
+    with pytest.raises(GraphError, match="unknown graph"):
+        restored.read("g1")

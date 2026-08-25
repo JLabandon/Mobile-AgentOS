@@ -20,11 +20,51 @@ class NodeStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class ArtifactState(StrEnum):
+    FUTURE = "FUTURE"
+    CONCRETE = "CONCRETE"
+    INVALIDATED = "INVALIDATED"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True)
+class ArtifactKey:
+    artifact_type: str
+    subject: str
+    scope: str = ""
+    valid_time: str = ""
+    source_app: str = ""
+    source_account: str = ""
+    version: str = ""
+    access_scope: str = "task"
+
+    def __post_init__(self) -> None:
+        if not self.artifact_type.strip() or not self.subject.strip():
+            raise ValueError("ArtifactKey requires artifact_type and subject")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "artifact_type": self.artifact_type,
+            "subject": self.subject,
+            "scope": self.scope,
+            "valid_time": self.valid_time,
+            "source_app": self.source_app,
+            "source_account": self.source_account,
+            "version": self.version,
+            "access_scope": self.access_scope,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ArtifactKey":
+        return cls(**{field: str(value.get(field, "")) for field in cls.__dataclass_fields__})
+
+
 @dataclass(frozen=True)
 class ArtifactDraft:
     kind: str
     payload: dict[str, Any]
     evidence_refs: tuple[str, ...] = ()
+    key: ArtifactKey | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +84,7 @@ class WorkSpec:
     goal: str
     expected_artifact_kinds: tuple[str, ...] = ()
     required_resources: tuple[str, ...] = ()
+    artifact_requirements: tuple[ArtifactKey, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -56,6 +97,7 @@ class Node:
     predecessors: tuple[str, ...] = ()
     expected_artifact_kinds: tuple[str, ...] = ()
     required_resources: tuple[str, ...] = ()
+    artifact_requirements: tuple[ArtifactKey, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     status: NodeStatus = NodeStatus.BLOCKED
     assignment_id: str | None = None

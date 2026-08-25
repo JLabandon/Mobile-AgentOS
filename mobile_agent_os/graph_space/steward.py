@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from dataclasses import asdict
 from dataclasses import dataclass, field, replace
 from threading import RLock
 from typing import Callable
 
-from .models import Artifact, ArtifactDraft, Edge, GraphEvent, GraphSnapshot, Node, NodeKind, NodeStatus, WorkSpec
+from .artifacts import SharedArtifact, SharedArtifactCatalog
+from .models import Artifact, ArtifactDraft, ArtifactKey, ArtifactState, Edge, GraphEvent, GraphSnapshot, Node, NodeKind, NodeStatus, WorkSpec
 from .registry import RegistryTable
 
 
@@ -50,6 +52,7 @@ class GraphSteward:
 
     def __init__(self, registry: RegistryTable) -> None:
         self.registry = registry
+        self.shared_artifacts = SharedArtifactCatalog()
         self._graphs: dict[str, _GraphRecord] = {}
         self._subscribers: list[Callable[[GraphEvent], None]] = []
         self._lock = RLock()
@@ -81,14 +84,20 @@ class GraphSteward:
                     goal=work.goal,
                     expected_artifact_kinds=work.expected_artifact_kinds,
                     required_resources=work.required_resources,
+                    artifact_requirements=work.artifact_requirements,
                     metadata=copy.deepcopy(work.metadata),
                     created_order=index,
                 )
             self._validate_edges(nodes, spec.edges)
             record = _GraphRecord(version=0, nodes=nodes, edges=list(spec.edges))
             self._graphs[spec.graph_id] = record
+            for node in nodes.values():
+                for key in node.artifact_requirements:
+                    if self.shared_artifacts.read(key) is not None:
+                        self.shared_artifacts.attach_consumer(key, spec.graph_id, node.node_id)
             self._refresh_readiness(record)
             event = self._record_event(record, spec.graph_id, "graph_created", tuple(nodes))
+            self._validate_record(spec.graph_id, record)
         self._notify(event)
         return self.read(spec.graph_id)
 
@@ -115,12 +124,93 @@ class GraphSteward:
                 raise GraphError(f"unknown node: {node_id}")
             predecessor_ids = {edge.from_node_id for edge in record.edges if edge.to_node_id == node_id}
             snapshot = self.read(graph_id, include_artifacts=False)
-            artifacts = tuple(
+            artifacts = list(
                 copy.deepcopy(artifact)
                 for artifact in record.artifacts.values()
                 if artifact.producer_node_id in predecessor_ids
             )
-            return replace(snapshot, artifacts=artifacts)
+            edges = list(snapshot.edges)
+            for key in record.nodes[node_id].artifact_requirements:
+                shared = self.shared_artifacts.read(key)
+                if shared is None or shared.state is not ArtifactState.CONCRETE or shared.payload is None:
+                    continue
+                producer_ref = f"{shared.producer_graph_id}:{shared.producer_node_id}"
+                digest = hashlib.sha256(json.dumps(key.to_dict(), sort_keys=True).encode("utf-8")).hexdigest()[:16]
+                artifact_id = f"shared:{digest}"
+                artifacts.append(
+                    Artifact(
+                        artifact_id,
+                        producer_ref,
+                        key.artifact_type,
+                        copy.deepcopy(shared.payload),
+                        shared.evidence_refs,
+                        snapshot.version,
+                    )
+                )
+                edges.append(Edge(producer_ref, node_id, (key.artifact_type,)))
+            return replace(snapshot, artifacts=tuple(artifacts), edges=tuple(edges))
+
+    def declare_future(self, key: ArtifactKey, producer_graph_id: str, producer_node_id: str) -> tuple[SharedArtifact, bool]:
+        with self._lock:
+            producer = self._record(producer_graph_id).nodes.get(producer_node_id)
+            if producer is None or producer.kind is not NodeKind.WORK:
+                raise GraphError("shared artifact producer must be an existing WORK node")
+            artifact, created = self.shared_artifacts.declare_future(key, producer_graph_id, producer_node_id)
+            record = self._record(producer_graph_id)
+            event = self._record_event(
+                record,
+                producer_graph_id,
+                "artifact_future_declared" if created else "artifact_future_reused",
+                (producer_node_id,),
+                {"artifact_key": key.to_dict()},
+            )
+            consumer_events: list[GraphEvent] = []
+            for consumer_graph_id, consumer_record in self._graphs.items():
+                for node in consumer_record.nodes.values():
+                    if key not in node.artifact_requirements:
+                        continue
+                    self.shared_artifacts.attach_consumer(key, consumer_graph_id, node.node_id)
+                    self._refresh_readiness(consumer_record)
+                    if consumer_graph_id != producer_graph_id:
+                        consumer_events.append(
+                            self._record_event(
+                                consumer_record,
+                                consumer_graph_id,
+                                "artifact_consumer_attached",
+                                (node.node_id,),
+                                {"artifact_key": key.to_dict()},
+                            )
+                        )
+                    self._validate_record(consumer_graph_id, consumer_record)
+            self._validate_record(producer_graph_id, record)
+        self._notify(event)
+        for consumer_event in consumer_events:
+            self._notify(consumer_event)
+        return artifact, created
+
+    def shared_artifact(self, key: ArtifactKey) -> SharedArtifact | None:
+        return self.shared_artifacts.read(key)
+
+    def attach_artifact_consumer(self, key: ArtifactKey, graph_id: str, node_id: str) -> SharedArtifact:
+        with self._lock:
+            record = self._record(graph_id)
+            node = record.nodes.get(node_id)
+            if node is None or key not in node.artifact_requirements:
+                raise GraphError("consumer node does not declare the shared artifact requirement")
+            artifact = self.shared_artifacts.attach_consumer(key, graph_id, node_id)
+            self._refresh_readiness(record)
+            event = self._record_event(record, graph_id, "artifact_consumer_attached", (node_id,), {"artifact_key": key.to_dict()})
+            self._validate_record(graph_id, record)
+        self._notify(event)
+        return artifact
+
+    def invalidate_shared_artifact(self, key: ArtifactKey, reason: str) -> SharedArtifact:
+        with self._lock:
+            artifact = self.shared_artifacts.invalidate(key, reason)
+            events = self._refresh_shared_consumers(key, "shared_artifact_invalidated", {"reason": reason})
+        for event in events:
+            self._notify(event)
+        return artifact
 
     def events(self, graph_id: str) -> tuple[GraphEvent, ...]:
         with self._lock:
@@ -133,6 +223,98 @@ class GraphSteward:
             for event in events:
                 handle.write(json.dumps(asdict(event), ensure_ascii=False) + "\n")
 
+    def validate_graph(self, graph_id: str) -> None:
+        """Validate the persisted topology, state, artifact, and event invariants."""
+        with self._lock:
+            self._validate_record(graph_id, self._record(graph_id))
+
+    def export_checkpoint(self, graph_id: str) -> dict[str, object]:
+        """Export a JSON-serializable checkpoint for crash recovery."""
+        with self._lock:
+            record = self._record(graph_id)
+            self._validate_record(graph_id, record)
+            return {
+                "graph_id": graph_id,
+                "version": record.version,
+                "nodes": [asdict(record.nodes[key]) for key in sorted(record.nodes, key=lambda item: record.nodes[item].created_order)],
+                "edges": [asdict(edge) for edge in record.edges],
+                "artifacts": [asdict(record.artifacts[key]) for key in sorted(record.artifacts)],
+                "events": [asdict(event) for event in record.events],
+                "next_artifact": record.next_artifact,
+            }
+
+    def restore_checkpoint(self, checkpoint: dict[str, object]) -> GraphSnapshot:
+        """Restore one graph after validating the complete checkpoint before publication."""
+        graph_id = str(checkpoint["graph_id"])
+        raw_nodes = checkpoint.get("nodes", [])
+        raw_edges = checkpoint.get("edges", [])
+        raw_artifacts = checkpoint.get("artifacts", [])
+        raw_events = checkpoint.get("events", [])
+        if not all(isinstance(value, list) for value in (raw_nodes, raw_edges, raw_artifacts, raw_events)):
+            raise GraphError("checkpoint collections must be lists")
+        nodes = {
+            str(value["node_id"]): Node(
+                node_id=str(value["node_id"]),
+                kind=NodeKind(str(value["kind"])),
+                agent_id=str(value["agent_id"]) if value.get("agent_id") is not None else None,
+                goal=str(value["goal"]),
+                predecessors=tuple(str(item) for item in value.get("predecessors", [])),
+                expected_artifact_kinds=tuple(str(item) for item in value.get("expected_artifact_kinds", [])),
+                required_resources=tuple(str(item) for item in value.get("required_resources", [])),
+                artifact_requirements=tuple(ArtifactKey.from_dict(item) for item in value.get("artifact_requirements", [])),
+                metadata=copy.deepcopy(value.get("metadata", {})),
+                status=NodeStatus(str(value["status"])),
+                assignment_id=str(value["assignment_id"]) if value.get("assignment_id") is not None else None,
+                artifact_ids=tuple(str(item) for item in value.get("artifact_ids", [])),
+                outcome=str(value["outcome"]) if value.get("outcome") is not None else None,
+                created_order=int(value.get("created_order", 0)),
+            )
+            for value in raw_nodes
+            if isinstance(value, dict)
+        }
+        edges = [
+            Edge(str(value["from_node_id"]), str(value["to_node_id"]), tuple(str(item) for item in value.get("artifact_kinds", [])))
+            for value in raw_edges
+            if isinstance(value, dict)
+        ]
+        artifacts = {
+            str(value["artifact_id"]): Artifact(
+                artifact_id=str(value["artifact_id"]),
+                producer_node_id=str(value["producer_node_id"]),
+                kind=str(value["kind"]),
+                payload=copy.deepcopy(value.get("payload", {})),
+                evidence_refs=tuple(str(item) for item in value.get("evidence_refs", [])),
+                graph_version=int(value["graph_version"]),
+            )
+            for value in raw_artifacts
+            if isinstance(value, dict)
+        }
+        events = [
+            GraphEvent(
+                graph_id=str(value["graph_id"]),
+                version=int(value["version"]),
+                kind=str(value["kind"]),
+                node_ids=tuple(str(item) for item in value.get("node_ids", [])),
+                detail=copy.deepcopy(value.get("detail", {})),
+            )
+            for value in raw_events
+            if isinstance(value, dict)
+        ]
+        record = _GraphRecord(
+            version=int(checkpoint["version"]),
+            nodes=nodes,
+            edges=edges,
+            artifacts=artifacts,
+            events=events,
+            next_artifact=int(checkpoint.get("next_artifact", len(artifacts) + 1)),
+        )
+        self._validate_record(graph_id, record)
+        with self._lock:
+            if graph_id in self._graphs:
+                raise GraphError(f"graph already exists: {graph_id}")
+            self._graphs[graph_id] = record
+        return self.read(graph_id)
+
     def assign(self, graph_id: str, node_id: str, assignment_id: str) -> None:
         with self._lock:
             record = self._record(graph_id)
@@ -141,6 +323,7 @@ class GraphSteward:
                 raise GraphError(f"node is not assignable: {node_id} ({node.status})")
             record.nodes[node_id] = replace(node, status=NodeStatus.ASSIGNED, assignment_id=assignment_id)
             event = self._record_event(record, graph_id, "assignment_created", (node_id,), {"assignment_id": assignment_id})
+            self._validate_record(graph_id, record)
         self._notify(event)
 
     def start(self, graph_id: str, node_id: str, assignment_id: str) -> None:
@@ -150,6 +333,7 @@ class GraphSteward:
             self._require_assignment(node, assignment_id, NodeStatus.ASSIGNED)
             record.nodes[node_id] = replace(node, status=NodeStatus.RUNNING)
             event = self._record_event(record, graph_id, "assignment_acknowledged", (node_id,), {"assignment_id": assignment_id})
+            self._validate_record(graph_id, record)
         self._notify(event)
 
     def commit_node(self, graph_id: str, node_id: str, assignment_id: str, artifacts: tuple[ArtifactDraft, ...] = ()) -> GraphSnapshot:
@@ -171,11 +355,20 @@ class GraphSteward:
                 # A rejected report never becomes a graph artifact.
                 artifact_ids: tuple[str, ...] = ()
             else:
-                artifact_ids = self._publish_artifacts(record, node_id, artifacts)
+                artifact_ids = self._publish_artifacts(record, graph_id, node_id, artifacts)
                 record.nodes[node_id] = replace(node, status=NodeStatus.DONE, artifact_ids=artifact_ids, outcome="completed")
                 self._refresh_readiness(record)
                 event = self._record_event(record, graph_id, "node_completed", (node_id,), {"assignment_id": assignment_id, "artifact_ids": artifact_ids})
+                shared_events = [
+                    item
+                    for draft in artifacts
+                    if draft.key is not None
+                    for item in self._refresh_shared_consumers(draft.key, "shared_artifact_published", {"producer_graph_id": graph_id, "producer_node_id": node_id}, exclude_graph_id=graph_id)
+                ]
+            self._validate_record(graph_id, record)
         self._notify(event)
+        for shared_event in shared_events if not rejection else ():
+            self._notify(shared_event)
         return self.read(graph_id)
 
     def fail_node(self, graph_id: str, node_id: str, assignment_id: str, reason: str) -> GraphSnapshot:
@@ -186,6 +379,7 @@ class GraphSteward:
             record.nodes[node_id] = replace(node, status=NodeStatus.FAILED, outcome=reason)
             self._refresh_readiness(record)
             event = self._record_event(record, graph_id, "node_failed", (node_id,), {"assignment_id": assignment_id, "reason": reason})
+            self._validate_record(graph_id, record)
         self._notify(event)
         return self.read(graph_id)
 
@@ -206,7 +400,7 @@ class GraphSteward:
                 raise GraphError("continuation must remain owned by the origin AppAgent")
 
             successors = [edge.to_node_id for edge in record.edges if edge.from_node_id == origin.node_id]
-            checkpoint_ids = self._publish_artifacts(record, origin.node_id, (request.checkpoint,))
+            checkpoint_ids = self._publish_artifacts(record, graph_id, origin.node_id, (request.checkpoint,))
             record.nodes[origin.node_id] = replace(origin, status=NodeStatus.DONE, artifact_ids=checkpoint_ids, outcome="checkpoint")
             next_order = max(node.created_order for node in record.nodes.values()) + 1
             record.nodes[request.provider.node_id] = self._work_node(request.provider, next_order)
@@ -227,6 +421,7 @@ class GraphSteward:
                 (origin.node_id, request.provider.node_id, request.continuation.node_id, *successors),
                 {"request_kind": request.request_kind, "required_capability": request.required_capability},
             )
+            self._validate_record(graph_id, record)
         self._notify(event)
         return self.read(graph_id)
 
@@ -239,17 +434,20 @@ class GraphSteward:
             sink = sinks[0]
             record.nodes[sink.node_id] = replace(sink, status=NodeStatus.DONE if success else NodeStatus.FAILED, outcome="evaluation", metadata={"evidence_refs": evidence_refs})
             event = self._record_event(record, graph_id, "sink_evaluated", (sink.node_id,), {"success": success})
+            self._validate_record(graph_id, record)
         self._notify(event)
         return self.read(graph_id)
 
     def _work_node(self, spec: WorkSpec, created_order: int) -> Node:
-        return Node(spec.node_id, NodeKind.WORK, spec.agent_id, spec.goal, expected_artifact_kinds=spec.expected_artifact_kinds, required_resources=spec.required_resources, metadata=copy.deepcopy(spec.metadata), created_order=created_order)
+        return Node(spec.node_id, NodeKind.WORK, spec.agent_id, spec.goal, expected_artifact_kinds=spec.expected_artifact_kinds, required_resources=spec.required_resources, artifact_requirements=spec.artifact_requirements, metadata=copy.deepcopy(spec.metadata), created_order=created_order)
 
-    def _publish_artifacts(self, record: _GraphRecord, node_id: str, drafts: tuple[ArtifactDraft, ...]) -> tuple[str, ...]:
+    def _publish_artifacts(self, record: _GraphRecord, graph_id: str, node_id: str, drafts: tuple[ArtifactDraft, ...]) -> tuple[str, ...]:
         artifact_ids = []
         for draft in drafts:
             artifact_id = f"A{record.next_artifact}"
             record.next_artifact += 1
+            if draft.key is not None:
+                self.shared_artifacts.publish(draft.key, graph_id, node_id, draft.payload, draft.evidence_refs)
             record.artifacts[artifact_id] = Artifact(artifact_id, node_id, draft.kind, copy.deepcopy(draft.payload), tuple(draft.evidence_refs), record.version + 1)
             artifact_ids.append(artifact_id)
         return tuple(artifact_ids)
@@ -267,6 +465,8 @@ class GraphSteward:
         if not drafts:
             return "completion produced no artifact"
         for draft in drafts:
+            if draft.key is not None and draft.key.artifact_type != draft.kind:
+                return f"completion artifact kind does not match shared ArtifactKey: {draft.kind}"
             value = draft.payload.get("value")
             evidence = draft.payload.get("evidence")
             if not GraphSteward._has_content(value):
@@ -295,18 +495,44 @@ class GraphSteward:
             prior = predecessors[node_id]
             failed = tuple(item for item in prior if record.nodes[item].status is NodeStatus.FAILED)
             metadata = dict(node.metadata)
+            requirements_ready = all(
+                (shared := self.shared_artifacts.read(key)) is not None and shared.state is ArtifactState.CONCRETE
+                for key in node.artifact_requirements
+            )
             if failed:
                 metadata["blocked_by_failed_predecessors"] = failed
                 record.nodes[node_id] = replace(node, predecessors=tuple(prior), metadata=metadata, status=NodeStatus.BLOCKED)
-            elif prior and all(record.nodes[item].status is NodeStatus.DONE for item in prior):
+            elif prior and all(record.nodes[item].status is NodeStatus.DONE for item in prior) and requirements_ready:
                 metadata.pop("blocked_by_failed_predecessors", None)
                 record.nodes[node_id] = replace(node, predecessors=tuple(prior), metadata=metadata, status=NodeStatus.READY)
-            elif not prior and node.kind is NodeKind.WORK:
+            elif not prior and node.kind is NodeKind.WORK and requirements_ready:
                 metadata.pop("blocked_by_failed_predecessors", None)
                 record.nodes[node_id] = replace(node, predecessors=(), metadata=metadata, status=NodeStatus.READY)
             else:
                 metadata.pop("blocked_by_failed_predecessors", None)
                 record.nodes[node_id] = replace(node, predecessors=tuple(prior), metadata=metadata, status=NodeStatus.BLOCKED)
+
+    def _refresh_shared_consumers(
+        self,
+        key: ArtifactKey,
+        event_kind: str,
+        detail: dict[str, object],
+        *,
+        exclude_graph_id: str | None = None,
+    ) -> list[GraphEvent]:
+        shared = self.shared_artifacts.read(key)
+        if shared is None:
+            return []
+        events: list[GraphEvent] = []
+        for graph_id, node_id in shared.consumers:
+            if graph_id == exclude_graph_id:
+                continue
+            record = self._record(graph_id)
+            self._refresh_readiness(record)
+            event = self._record_event(record, graph_id, event_kind, (node_id,), {"artifact_key": key.to_dict(), **detail})
+            self._validate_record(graph_id, record)
+            events.append(event)
+        return events
 
     def _record_event(self, record: _GraphRecord, graph_id: str, kind: str, node_ids: tuple[str, ...], detail: dict[str, object] | None = None) -> GraphEvent:
         record.version += 1
@@ -339,6 +565,32 @@ class GraphSteward:
 
         for node_id in nodes:
             visit(node_id)
+
+    def _validate_record(self, graph_id: str, record: _GraphRecord) -> None:
+        self._validate_edges(record.nodes, tuple(record.edges))
+        sources = [node for node in record.nodes.values() if node.kind is NodeKind.SOURCE]
+        sinks = [node for node in record.nodes.values() if node.kind is NodeKind.SINK]
+        if len(sources) != 1 or len(sinks) != 1:
+            raise GraphError("graph must contain exactly one SOURCE and one SINK")
+        known_agents = {profile.app_id for profile in self.registry.profiles()}
+        for node in record.nodes.values():
+            if node.kind is NodeKind.WORK and node.agent_id not in known_agents:
+                raise GraphError(f"unknown AppAgent in graph state: {node.agent_id}")
+            if node.status in {NodeStatus.ASSIGNED, NodeStatus.RUNNING} and not node.assignment_id:
+                raise GraphError(f"active node has no assignment: {node.node_id}")
+            for artifact_id in node.artifact_ids:
+                artifact = record.artifacts.get(artifact_id)
+                if artifact is None or artifact.producer_node_id != node.node_id:
+                    raise GraphError(f"invalid artifact ownership: {artifact_id}")
+        for artifact in record.artifacts.values():
+            producer = record.nodes.get(artifact.producer_node_id)
+            if producer is None or artifact.artifact_id not in producer.artifact_ids:
+                raise GraphError(f"artifact has no producer reference: {artifact.artifact_id}")
+        if any(event.graph_id != graph_id for event in record.events):
+            raise GraphError("checkpoint contains an event for another graph")
+        versions = [event.version for event in record.events]
+        if versions != sorted(set(versions)) or (versions and versions[-1] != record.version):
+            raise GraphError("event versions do not match graph version")
 
     def _record(self, graph_id: str) -> _GraphRecord:
         try:

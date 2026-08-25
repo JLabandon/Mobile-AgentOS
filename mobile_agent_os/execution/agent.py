@@ -6,7 +6,7 @@ from typing import Protocol
 from ..graph_space.models import ArtifactDraft, GraphSnapshot, WorkSpec
 from ..graph_space.registry import AppProfile
 from ..graph_space.steward import CheckpointExpansion, GraphSteward
-from ..scheduling.scheduler import Assignment, FifoScheduler
+from ..scheduling.scheduler import Assignment, GraphScheduler
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ class PrimitiveExecutor(Protocol):
 class AppAgent:
     """An assignment-driven AppAgent service. It owns no graph mutation rights."""
 
-    def __init__(self, agent_id: str, steward: GraphSteward, scheduler: FifoScheduler, executor: PrimitiveExecutor) -> None:
+    def __init__(self, agent_id: str, steward: GraphSteward, scheduler: GraphScheduler, executor: PrimitiveExecutor) -> None:
         self.agent_id = agent_id
         self.steward = steward
         self.scheduler = scheduler

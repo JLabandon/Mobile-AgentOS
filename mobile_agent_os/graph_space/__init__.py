@@ -1,4 +1,5 @@
-from .models import Artifact, ArtifactDraft, Edge, GraphSnapshot, Node, NodeKind, NodeStatus, WorkSpec
+from .artifacts import ArtifactCatalogError, SharedArtifact, SharedArtifactCatalog
+from .models import Artifact, ArtifactDraft, ArtifactKey, ArtifactState, Edge, GraphSnapshot, Node, NodeKind, NodeStatus, WorkSpec
 from .registry import AppProfile, RegistryTable
 from .steward import CheckpointExpansion, GraphSteward, InitialGraph
 
@@ -6,6 +7,9 @@ __all__ = [
     "AppProfile",
     "Artifact",
     "ArtifactDraft",
+    "ArtifactCatalogError",
+    "ArtifactKey",
+    "ArtifactState",
     "CheckpointExpansion",
     "Edge",
     "GraphSnapshot",
@@ -15,5 +19,7 @@ __all__ = [
     "NodeKind",
     "NodeStatus",
     "RegistryTable",
+    "SharedArtifact",
+    "SharedArtifactCatalog",
     "WorkSpec",
 ]
