@@ -13,7 +13,6 @@
   },
   "shared_provider_project_codes": {
     "description": "Core benchmark task for two concurrent tasks contending for one provider AppAgent.",
-    "goal": "Complete the procurement request and the shipping request.",
-    "max_steps": 3
+    "goal": "Complete the procurement request and the shipping request."
   }
 }

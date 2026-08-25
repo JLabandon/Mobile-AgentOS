@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
@@ -60,22 +59,4 @@ def _load_deepseek_key() -> str:
     value = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if value:
         return value
-    for parent in Path(__file__).resolve().parents:
-        for candidate in (
-            parent / ".env",
-            parent / "projects" / "agent_ipc_mvp" / ".env",
-            parent / "agent_ipc_mvp" / ".env",
-        ):
-            if not candidate.exists():
-                continue
-            for raw_line in candidate.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, item = line.split("=", 1)
-                if key.strip() == "DEEPSEEK_API_KEY":
-                    value = item.strip().strip('"').strip("'")
-                    if value:
-                        os.environ.setdefault("DEEPSEEK_API_KEY", value)
-                        return value
     raise ModelClientError("missing DEEPSEEK_API_KEY")

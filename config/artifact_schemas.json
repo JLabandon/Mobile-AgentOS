@@ -1,0 +1,36 @@
+{
+  "record.field": {
+    "description": "A semantic attribute value about a named subject. Provider app and destination record are provenance and consumer context.",
+    "schema_version": 1,
+    "required_fields": [
+      "subject",
+      "attribute"
+    ],
+    "field_types": {
+      "subject": "string",
+      "attribute": "string"
+    },
+    "normalizers": {
+      "subject": "casefold",
+      "attribute": "casefold"
+    },
+    "sharing_scope": "user:local"
+  },
+  "operation.receipt": {
+    "description": "A receipt produced by one identified side-effecting operation.",
+    "schema_version": 1,
+    "required_fields": [
+      "operation_id",
+      "operation_type"
+    ],
+    "field_types": {
+      "operation_id": "string",
+      "operation_type": "string"
+    },
+    "normalizers": {
+      "operation_id": "identity",
+      "operation_type": "casefold"
+    },
+    "sharing_scope": "task"
+  }
+}

@@ -14,31 +14,32 @@ ACTION_JSON_SCHEMA = {
         "text": {"type": "string"},
         "direction": {"type": "string"},
         "artifact_kind": {"type": "string"},
+        "artifact_node_id": {"type": "string"},
         "artifact": {"type": "object"},
         "message": {"type": "string"},
         "required_capability": {"type": "string"},
         "need": {"type": "string"},
         "target_agent": {"type": "string"},
-        "provider_goal": {"type": "string"},
-    },
-    "required": ["action"],
-}
-
-
-COMPLETION_REPORT_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "artifact_kind": {"type": "string", "minLength": 1},
-        "artifact": {
+        "artifact_identity": {
             "type": "object",
             "properties": {
-                "value": {},
-                "evidence": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "schema_id": {"type": "string"},
+                "parameters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "value": {"type": "string"},
+                        },
+                        "required": ["name", "value"],
+                    },
+                },
             },
-            "required": ["value", "evidence"],
+            "required": ["schema_id", "parameters"],
         },
     },
-    "required": ["artifact_kind", "artifact"],
+    "required": ["action"],
 }
 
 
@@ -50,24 +51,12 @@ def build_action_prompt(*, width: int, height: int, agent_name: str, app_label: 
         "For click or input_text, use element_id from the visible UI list when available; otherwise include integer x and y. "
         "input_text also requires text. Use the assigned work, execution history, structured visible UI list, and screenshot together to choose the next action. "
         "The structured visible UI list provides the current control and value state; the screenshot provides visual layout. Return complete when you judge that the available evidence fulfills the assigned work. "
-        "complete must return artifact_kind and an artifact object with a non-empty value and evidence. "
+        "complete must return artifact_kind and an artifact object with a non-empty value and evidence. Include artifact_node_id when multiple expected outputs share one kind. "
         "value is the result for downstream work; evidence is visible text or facts supporting that result. Prefer the assigned work's expected artifact type when one is shown in context. "
-        "When a required input is unavailable, return request_information or request_operation with fields required_capability, need, and optional target_agent. "
+        "When a required input is unavailable, return request_information or request_operation with required_capability and need. "
+        "target_agent may be omitted only when the Registry lists exactly one provider for that capability. "
+        "When a matching Artifact schema and all identity fields are known, include artifact_identity with schema_id and name/value parameter pairs. "
         "Do not invent UI state or information. "
         f"Screenshot size: {width}x{height}. Agent: {agent_name}. App: {app_label}. "
         f"Assigned work: {task_instruction}. Context: {memory or '<none>'}"
-    )
-
-
-def build_information_response_prompt(**kwargs: object) -> str:
-    return build_action_prompt(**kwargs)  # Information work uses the same AppAgent protocol.
-
-
-def build_completion_report_prompt(*, agent_name: str, app_label: str, task_instruction: str, artifact_kind: str, memory: str = "") -> str:
-    return (
-        "You are producing a completion report for one finished mobile work unit. Return one JSON object only. "
-        "Extract the result required by the work from the current visible UI. artifact_kind must be the requested type. "
-        "artifact.value contains the result for downstream work. artifact.evidence is a non-empty list of visible text or facts supporting it. "
-        "Do not infer facts that are not visible. "
-        f"Agent: {agent_name}. App: {app_label}. Assigned work: {task_instruction}. Required artifact kind: {artifact_kind}. Context: {memory or '<none>'}"
     )

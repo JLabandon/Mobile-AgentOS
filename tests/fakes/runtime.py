@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mobile_agent_os.execution import Completed, ExecutionContext, Failed, NeedsExpansion
-from mobile_agent_os.graph_space import AppProfile, ArtifactDraft, RegistryTable
+from mobile_agent_os.graph_space import AppProfile, ArtifactDraft, ArtifactSchema, RegistryTable
 
 
 def registry() -> RegistryTable:
@@ -13,7 +13,26 @@ def registry() -> RegistryTable:
             "calendar": AppProfile("calendar", "Calendar", "Appointment app", ("create_event",), ("calendar.pkg",)),
             "notes": AppProfile("notes", "Notes", "Note source", ("search_notes", "retrieve_information"), ("notes.pkg",)),
             "payment": AppProfile("payment", "Payment", "Payment app", ("authorize_payment",), ("payment.pkg",)),
-        }
+        },
+        {
+            "appointment.location": ArtifactSchema(
+                "appointment.location",
+                ("participant", "start_time"),
+                (("participant", "string"), ("start_time", "string")),
+            ),
+            "project.code": ArtifactSchema(
+                "project.code",
+                ("project",),
+                (("project", "string"),),
+                normalizers=(("project", "casefold"),),
+            ),
+            "weather.forecast": ArtifactSchema(
+                "weather.forecast",
+                ("place", "date"),
+                (("place", "string"), ("date", "string")),
+                default_freshness_seconds=900,
+            ),
+        },
     )
 
 

@@ -1,4 +1,4 @@
-from mobile_agent_os.execution.prompts import ACTION_JSON_SCHEMA, COMPLETION_REPORT_JSON_SCHEMA, build_action_prompt
+from mobile_agent_os.execution.prompts import ACTION_JSON_SCHEMA, build_action_prompt
 
 
 def test_action_prompt_names_runtime_request_fields() -> None:
@@ -14,10 +14,12 @@ def test_action_prompt_names_runtime_request_fields() -> None:
     assert "target_agent" in prompt
     assert "element_id" in prompt
     assert "artifact_kind" in prompt
+    assert "artifact_identity" in prompt
     assert "top-level field action" in prompt
 
 
 def test_action_schema_requires_one_top_level_action() -> None:
     assert ACTION_JSON_SCHEMA["required"] == ["action"]
     assert "request_information" in ACTION_JSON_SCHEMA["properties"]["action"]["enum"]
-    assert COMPLETION_REPORT_JSON_SCHEMA["properties"]["artifact"]["required"] == ["value", "evidence"]
+    identity = ACTION_JSON_SCHEMA["properties"]["artifact_identity"]
+    assert identity["properties"]["parameters"]["type"] == "array"

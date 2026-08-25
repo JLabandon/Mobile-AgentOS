@@ -1,12 +1,6 @@
 {
   "tasks": {
     "pipeline_overlap_independent_forms": {
-      "candidate_apps": {
-        "clinic_agent": "clinic_checkin",
-        "inventory_agent": "inventory_request",
-        "compliance_agent": "compliance_filing"
-      },
-      "success_contains": "compliance filing complete",
       "evaluator_apps": [
         "clinic_checkin",
         "inventory_request",
@@ -21,13 +15,6 @@
       ]
     },
     "planned_shop_payment_authorization": {
-      "candidate_apps": {
-        "shop_agent": "shop",
-        "payment_agent": "payment",
-        "notes_agent": "notes",
-        "procurement_agent": "procurement_portal"
-      },
-      "success_contains": "ready for pickup",
       "clear_packages": [
         "edu.agentos.mockshop",
         "edu.agentos.mockpayment",
@@ -36,11 +23,6 @@
       ]
     },
     "late_bound_service_case_token": {
-      "candidate_apps": {
-        "case_agent": "service_case_desk",
-        "notes_agent": "notes"
-      },
-      "success_contains": "service case submitted",
       "evaluator_apps": [
         "service_case_desk"
       ],
@@ -52,14 +34,6 @@
       ]
     },
     "shared_provider_project_codes": {
-      "candidate_apps": {
-        "procurement_agent": "procurement_portal",
-        "shipping_agent": "shipping_portal",
-        "notes_agent": "notes",
-        "case_agent": "service_case_desk",
-        "compliance_agent": "compliance_filing"
-      },
-      "success_contains": "shipping request complete",
       "clear_packages": [
         "edu.agentos.mocktaska",
         "edu.agentos.mocktaskb",

@@ -1,16 +1,37 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
-from dataclasses import asdict
-from dataclasses import dataclass, field, replace
+import time
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from threading import RLock
 from typing import Callable
 
-from .artifacts import SharedArtifact, SharedArtifactCatalog
-from .models import Artifact, ArtifactDraft, ArtifactKey, ArtifactState, Edge, GraphEvent, GraphSnapshot, Node, NodeKind, NodeStatus, WorkSpec
+from .artifact_index import ArtifactIndex, ArtifactIndexError
 from .registry import RegistryTable
+from .schema import (
+    ArtifactDraft,
+    ArtifactIdentityCandidate,
+    ArtifactKey,
+    ArtifactNode,
+    ArtifactRequirement,
+    ArtifactResolution,
+    ArtifactSpec,
+    ArtifactState,
+    DependencyEdge,
+    EdgeKind,
+    GlobalGraphSnapshot,
+    GraphEvent,
+    GraphFragment,
+    ResolutionKind,
+    ReusePolicy,
+    TaskRecord,
+    TaskStatus,
+    WorkNode,
+    WorkSpec,
+    WorkStatus,
+)
 
 
 class GraphError(RuntimeError):
@@ -18,591 +39,1043 @@ class GraphError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class InitialGraph:
-    graph_id: str
-    source_id: str
-    sink_id: str
-    work: tuple[WorkSpec, ...]
-    edges: tuple[Edge, ...]
-
-
-@dataclass(frozen=True)
-class CheckpointExpansion:
-    origin_node_id: str
+class RuntimeExpansion:
+    origin_work_id: str
     assignment_id: str
     checkpoint: ArtifactDraft
     provider: WorkSpec
     continuation: WorkSpec
+    artifact_kind: str
+    identity: ArtifactIdentityCandidate | None
     request_kind: str
     required_capability: str
+    freshness_requirement_seconds: float | None = None
 
 
 @dataclass
-class _GraphRecord:
-    version: int
-    nodes: dict[str, Node]
-    edges: list[Edge]
-    artifacts: dict[str, Artifact] = field(default_factory=dict)
+class _GlobalGraphRecord:
+    version: int = 0
+    work: dict[str, WorkNode] = field(default_factory=dict)
+    artifacts: dict[str, ArtifactNode] = field(default_factory=dict)
+    edges: list[DependencyEdge] = field(default_factory=list)
+    tasks: dict[str, TaskRecord] = field(default_factory=dict)
     events: list[GraphEvent] = field(default_factory=list)
+    next_work: int = 1
     next_artifact: int = 1
+    next_created_order: int = 1
 
 
 class GraphSteward:
-    """The sole mutable owner of graph topology, node state, and artifacts."""
+    """Sole writer for the global execution graph and its derived ArtifactIndex."""
 
-    def __init__(self, registry: RegistryTable) -> None:
+    def __init__(self, registry: RegistryTable, *, clock: Callable[[], float] = time.time) -> None:
         self.registry = registry
-        self.shared_artifacts = SharedArtifactCatalog()
-        self._graphs: dict[str, _GraphRecord] = {}
+        self._record = _GlobalGraphRecord()
+        self._artifact_index = ArtifactIndex()
         self._subscribers: list[Callable[[GraphEvent], None]] = []
+        self._clock = clock
         self._lock = RLock()
 
     def subscribe(self, callback: Callable[[GraphEvent], None]) -> None:
         self._subscribers.append(callback)
 
-    def create_initial_graph(self, spec: InitialGraph) -> GraphSnapshot:
+    def submit_task_fragment(self, fragment: GraphFragment) -> TaskRecord:
         with self._lock:
-            if spec.graph_id in self._graphs:
-                raise GraphError(f"graph already exists: {spec.graph_id}")
-            node_ids = {spec.source_id, spec.sink_id}
-            if len(node_ids) != 2:
-                raise GraphError("source and sink ids must differ")
-            nodes = {
-                spec.source_id: Node(spec.source_id, NodeKind.SOURCE, None, "Task start", status=NodeStatus.DONE, outcome="source", created_order=0),
-                spec.sink_id: Node(spec.sink_id, NodeKind.SINK, None, "Task evaluation", created_order=len(spec.work) + 1),
+            self._validate_fragment(fragment)
+            record, index = copy.deepcopy(self._record), copy.deepcopy(self._artifact_index)
+            now = self._clock()
+            key_by_artifact = {
+                spec.local_id: self._canonical_key(spec.identity, (fragment.task_id,)) if spec.identity is not None else None
+                for spec in fragment.artifacts
             }
-            for index, work in enumerate(spec.work, start=1):
-                if work.node_id in node_ids:
-                    raise GraphError(f"duplicate node id: {work.node_id}")
-                if work.agent_id not in {profile.app_id for profile in self.registry.profiles()}:
-                    raise GraphError(f"unknown AppAgent: {work.agent_id}")
-                node_ids.add(work.node_id)
-                nodes[work.node_id] = Node(
-                    node_id=work.node_id,
-                    kind=NodeKind.WORK,
-                    agent_id=work.agent_id,
-                    goal=work.goal,
-                    expected_artifact_kinds=work.expected_artifact_kinds,
-                    required_resources=work.required_resources,
-                    artifact_requirements=work.artifact_requirements,
-                    metadata=copy.deepcopy(work.metadata),
-                    created_order=index,
-                )
-            self._validate_edges(nodes, spec.edges)
-            record = _GraphRecord(version=0, nodes=nodes, edges=list(spec.edges))
-            self._graphs[spec.graph_id] = record
-            for node in nodes.values():
-                for key in node.artifact_requirements:
-                    if self.shared_artifacts.read(key) is not None:
-                        self.shared_artifacts.attach_consumer(key, spec.graph_id, node.node_id)
-            self._refresh_readiness(record)
-            event = self._record_event(record, spec.graph_id, "graph_created", tuple(nodes))
-            self._validate_record(spec.graph_id, record)
-        self._notify(event)
-        return self.read(spec.graph_id)
+            fingerprints = [key.fingerprint for key in key_by_artifact.values() if key is not None]
+            if len(fingerprints) != len(set(fingerprints)):
+                raise GraphError("a task fragment cannot declare the same indexed Artifact twice")
 
-    def read(self, graph_id: str, *, include_artifacts: bool = True) -> GraphSnapshot:
-        with self._lock:
-            record = self._record(graph_id)
-            return GraphSnapshot(
-                graph_id=graph_id,
-                version=record.version,
-                nodes=tuple(copy.deepcopy(record.nodes[key]) for key in sorted(record.nodes, key=lambda item: record.nodes[item].created_order)),
-                edges=tuple(copy.deepcopy(record.edges)),
-                artifacts=tuple(copy.deepcopy(record.artifacts[key]) for key in sorted(record.artifacts)) if include_artifacts else (),
-            )
-
-    def read_for_scheduler(self, graph_id: str) -> GraphSnapshot:
-        """Scheduling receives topology and state, never artifact payloads."""
-        return self.read(graph_id, include_artifacts=False)
-
-    def read_for_node(self, graph_id: str, node_id: str) -> GraphSnapshot:
-        """An AppAgent receives public graph structure plus only its predecessor artifacts."""
-        with self._lock:
-            record = self._record(graph_id)
-            if node_id not in record.nodes:
-                raise GraphError(f"unknown node: {node_id}")
-            predecessor_ids = {edge.from_node_id for edge in record.edges if edge.to_node_id == node_id}
-            snapshot = self.read(graph_id, include_artifacts=False)
-            artifacts = list(
-                copy.deepcopy(artifact)
-                for artifact in record.artifacts.values()
-                if artifact.producer_node_id in predecessor_ids
-            )
-            edges = list(snapshot.edges)
-            for key in record.nodes[node_id].artifact_requirements:
-                shared = self.shared_artifacts.read(key)
-                if shared is None or shared.state is not ArtifactState.CONCRETE or shared.payload is None:
+            spec_by_id = {spec.node_id: spec for spec in fragment.work}
+            artifact_producers = {artifact.producer_work_id for artifact in fragment.artifacts}
+            hit_by_artifact: dict[str, ArtifactNode] = {}
+            for artifact in fragment.artifacts:
+                key = key_by_artifact[artifact.local_id]
+                if key is None:
                     continue
-                producer_ref = f"{shared.producer_graph_id}:{shared.producer_node_id}"
-                digest = hashlib.sha256(json.dumps(key.to_dict(), sort_keys=True).encode("utf-8")).hexdigest()[:16]
-                artifact_id = f"shared:{digest}"
-                artifacts.append(
-                    Artifact(
-                        artifact_id,
-                        producer_ref,
-                        key.artifact_type,
-                        copy.deepcopy(shared.payload),
-                        shared.evidence_refs,
-                        snapshot.version,
-                    )
-                )
-                edges.append(Edge(producer_ref, node_id, (key.artifact_type,)))
-            return replace(snapshot, artifacts=tuple(artifacts), edges=tuple(edges))
+                active = self._active_artifact(record, index, key, artifact.freshness_requirement_seconds, now)
+                if active is not None:
+                    hit_by_artifact[artifact.local_id] = active
 
-    def declare_future(self, key: ArtifactKey, producer_graph_id: str, producer_node_id: str) -> tuple[SharedArtifact, bool]:
-        with self._lock:
-            producer = self._record(producer_graph_id).nodes.get(producer_node_id)
-            if producer is None or producer.kind is not NodeKind.WORK:
-                raise GraphError("shared artifact producer must be an existing WORK node")
-            artifact, created = self.shared_artifacts.declare_future(key, producer_graph_id, producer_node_id)
-            record = self._record(producer_graph_id)
+            local_map: dict[str, str] = {}
+            referenced_work: set[str] = set()
+            referenced_artifacts: set[str] = set()
+            for local_id, spec in spec_by_id.items():
+                produced = [item for item in fragment.artifacts if item.producer_work_id == local_id]
+                if produced and all(item.local_id in hit_by_artifact for item in produced):
+                    producer_ids = {hit_by_artifact[item.local_id].producer_work_id for item in produced}
+                    if len(producer_ids) != 1:
+                        raise GraphError("one local provider cannot map to multiple existing producers")
+                    global_id = producer_ids.pop()
+                    local_map[local_id] = global_id
+                    referenced_work.add(global_id)
+                    record.work[global_id] = self._add_membership(record.work[global_id], fragment.task_id)
+                    continue
+                global_id = self._new_work_id(record)
+                local_map[local_id] = global_id
+                referenced_work.add(global_id)
+                record.work[global_id] = WorkNode(
+                    node_id=global_id,
+                    agent_id=spec.agent_id,
+                    goal=spec.goal,
+                    required_resources=spec.required_resources,
+                    task_memberships=(fragment.task_id,),
+                    metadata=copy.deepcopy(spec.metadata),
+                    created_order=self._created_order(record),
+                )
+
+            for edge in fragment.control_edges:
+                source, target = local_map[edge.from_work_id], local_map[edge.to_work_id]
+                self._append_edge(record, DependencyEdge(source, target, EdgeKind.PRECEDES))
+                record.work[target] = replace(
+                    record.work[target],
+                    control_predecessors=self._append_unique(record.work[target].control_predecessors, source),
+                )
+
+            for spec in fragment.artifacts:
+                consumers = tuple(local_map[item] for item in spec.consumer_work_ids)
+                key = key_by_artifact[spec.local_id]
+                existing = hit_by_artifact.get(spec.local_id)
+                if existing is not None:
+                    artifact_id = existing.node_id
+                    artifact = self._attach_consumers(record, existing, consumers, fragment.task_id)
+                    record.artifacts[artifact_id] = artifact
+                    resolution = ResolutionKind.REUSED_CONCRETE if artifact.state is ArtifactState.CONCRETE else ResolutionKind.JOINED_FUTURE
+                else:
+                    producer_id = local_map[spec.producer_work_id]
+                    artifact_id = self._new_artifact_id(record)
+                    generation = len(index.history(key)) + 1 if key is not None else 1
+                    artifact = ArtifactNode(
+                        node_id=artifact_id,
+                        kind=spec.kind,
+                        state=ArtifactState.FUTURE,
+                        producer_work_id=producer_id,
+                        consumer_work_ids=consumers,
+                        key=key,
+                        reuse_policy=ReusePolicy.INDEXED if key is not None else ReusePolicy.UNINDEXED,
+                        generation=generation,
+                        task_memberships=(fragment.task_id,),
+                        created_order=self._created_order(record),
+                    )
+                    record.artifacts[artifact_id] = artifact
+                    record.work[producer_id] = replace(
+                        record.work[producer_id],
+                        output_artifact_ids=self._append_unique(record.work[producer_id].output_artifact_ids, artifact_id),
+                    )
+                    self._append_edge(record, DependencyEdge(producer_id, artifact_id, EdgeKind.PRODUCES))
+                    if key is not None:
+                        index.register(key, artifact_id)
+                    resolution = ResolutionKind.CREATED_FUTURE if key is not None else ResolutionKind.CREATED_UNINDEXED
+                local_map[spec.local_id] = artifact_id
+                referenced_artifacts.add(artifact_id)
+                for consumer_id in consumers:
+                    requirement = ArtifactRequirement(artifact_id, spec.freshness_requirement_seconds)
+                    record.work[consumer_id] = replace(
+                        record.work[consumer_id],
+                        input_artifacts=self._append_unique(record.work[consumer_id].input_artifacts, requirement),
+                    )
+                    self._append_edge(record, DependencyEdge(artifact_id, consumer_id, EdgeKind.CONSUMES))
+                if resolution in {ResolutionKind.REUSED_CONCRETE, ResolutionKind.JOINED_FUTURE}:
+                    referenced_work.add(record.artifacts[artifact_id].producer_work_id)
+
+            entries = self._entry_work_ids(record, referenced_work)
+            terminals = self._terminal_work_ids(record, fragment, local_map, referenced_work)
+            task = TaskRecord(
+                task_id=fragment.task_id,
+                user_goal=fragment.user_goal,
+                entry_work_ids=entries,
+                terminal_work_ids=terminals,
+                referenced_work_ids=tuple(sorted(referenced_work, key=lambda item: record.work[item].created_order)),
+                referenced_artifact_ids=tuple(sorted(referenced_artifacts, key=lambda item: record.artifacts[item].created_order)),
+                local_node_map=tuple(sorted(local_map.items())),
+                submitted_at=now,
+            )
+            record.tasks[fragment.task_id] = task
+            self._refresh(record, now)
             event = self._record_event(
                 record,
-                producer_graph_id,
-                "artifact_future_declared" if created else "artifact_future_reused",
-                (producer_node_id,),
-                {"artifact_key": key.to_dict()},
+                "task_submitted",
+                (fragment.task_id,),
+                (*task.referenced_work_ids, *task.referenced_artifact_ids),
             )
-            consumer_events: list[GraphEvent] = []
-            for consumer_graph_id, consumer_record in self._graphs.items():
-                for node in consumer_record.nodes.values():
-                    if key not in node.artifact_requirements:
-                        continue
-                    self.shared_artifacts.attach_consumer(key, consumer_graph_id, node.node_id)
-                    self._refresh_readiness(consumer_record)
-                    if consumer_graph_id != producer_graph_id:
-                        consumer_events.append(
-                            self._record_event(
-                                consumer_record,
-                                consumer_graph_id,
-                                "artifact_consumer_attached",
-                                (node.node_id,),
-                                {"artifact_key": key.to_dict()},
-                            )
-                        )
-                    self._validate_record(consumer_graph_id, consumer_record)
-            self._validate_record(producer_graph_id, record)
+            self._validate_record(record, index)
+            self._record, self._artifact_index = record, index
         self._notify(event)
-        for consumer_event in consumer_events:
-            self._notify(consumer_event)
-        return artifact, created
+        return self.read().task(fragment.task_id)
 
-    def shared_artifact(self, key: ArtifactKey) -> SharedArtifact | None:
-        return self.shared_artifacts.read(key)
-
-    def attach_artifact_consumer(self, key: ArtifactKey, graph_id: str, node_id: str) -> SharedArtifact:
+    def resolve_artifact(
+        self,
+        identity: ArtifactIdentityCandidate | None,
+        consumer_work_id: str,
+        task_id: str,
+        kind: str,
+        producer: WorkSpec,
+        freshness_requirement_seconds: float | None = None,
+    ) -> ArtifactResolution:
         with self._lock:
-            record = self._record(graph_id)
-            node = record.nodes.get(node_id)
-            if node is None or key not in node.artifact_requirements:
-                raise GraphError("consumer node does not declare the shared artifact requirement")
-            artifact = self.shared_artifacts.attach_consumer(key, graph_id, node_id)
-            self._refresh_readiness(record)
-            event = self._record_event(record, graph_id, "artifact_consumer_attached", (node_id,), {"artifact_key": key.to_dict()})
-            self._validate_record(graph_id, record)
+            record, index = copy.deepcopy(self._record), copy.deepcopy(self._artifact_index)
+            if consumer_work_id not in record.work or task_id not in record.tasks:
+                raise GraphError("artifact resolution refers to unknown work or task")
+            if record.work[consumer_work_id].status not in {WorkStatus.BLOCKED, WorkStatus.READY}:
+                raise GraphError("direct Artifact resolution requires a non-running consumer WORK")
+            key = self._canonical_key(identity, (task_id,)) if identity is not None else None
+            now = self._clock()
+            existing = self._active_artifact(record, index, key, freshness_requirement_seconds, now) if key else None
+            if existing is not None:
+                artifact = self._attach_consumers(record, existing, (consumer_work_id,), task_id)
+                record.artifacts[artifact.node_id] = artifact
+                producer_id = artifact.producer_work_id
+                record.work[producer_id] = self._add_membership(record.work[producer_id], task_id)
+                resolution = ResolutionKind.REUSED_CONCRETE if artifact.state is ArtifactState.CONCRETE else ResolutionKind.JOINED_FUTURE
+            else:
+                self._validate_work_spec(producer)
+                producer_id = self._new_work_id(record)
+                artifact_id = self._new_artifact_id(record)
+                record.work[producer_id] = WorkNode(
+                    producer_id,
+                    producer.agent_id,
+                    producer.goal,
+                    required_resources=producer.required_resources,
+                    task_memberships=(task_id,),
+                    metadata=copy.deepcopy(producer.metadata),
+                    output_artifact_ids=(artifact_id,),
+                    created_order=self._created_order(record),
+                )
+                artifact = ArtifactNode(
+                    artifact_id,
+                    kind,
+                    ArtifactState.FUTURE,
+                    producer_id,
+                    (consumer_work_id,),
+                    key,
+                    ReusePolicy.INDEXED if key is not None else ReusePolicy.UNINDEXED,
+                    len(index.history(key)) + 1 if key is not None else 1,
+                    task_memberships=(task_id,),
+                    created_order=self._created_order(record),
+                )
+                record.artifacts[artifact_id] = artifact
+                self._append_edge(record, DependencyEdge(producer_id, artifact_id, EdgeKind.PRODUCES))
+                self._append_edge(record, DependencyEdge(artifact_id, consumer_work_id, EdgeKind.CONSUMES))
+                if key is not None:
+                    index.register(key, artifact_id)
+                resolution = ResolutionKind.CREATED_FUTURE if key is not None else ResolutionKind.CREATED_UNINDEXED
+            requirement = ArtifactRequirement(artifact.node_id, freshness_requirement_seconds)
+            record.work[consumer_work_id] = replace(
+                record.work[consumer_work_id],
+                input_artifacts=self._append_unique(record.work[consumer_work_id].input_artifacts, requirement),
+            )
+            self._append_edge(record, DependencyEdge(artifact.node_id, consumer_work_id, EdgeKind.CONSUMES))
+            task = record.tasks[task_id]
+            record.tasks[task_id] = replace(
+                task,
+                referenced_work_ids=self._append_unique(task.referenced_work_ids, producer_id),
+                referenced_artifact_ids=self._append_unique(task.referenced_artifact_ids, artifact.node_id),
+            )
+            self._refresh(record, now)
+            event = self._record_event(record, "artifact_resolved", (task_id,), (artifact.node_id, consumer_work_id), {"resolution": resolution})
+            self._validate_record(record, index)
+            self._record, self._artifact_index = record, index
         self._notify(event)
-        return artifact
+        return ArtifactResolution(resolution, artifact.node_id, producer_id)
 
-    def invalidate_shared_artifact(self, key: ArtifactKey, reason: str) -> SharedArtifact:
+    def read(self, *, include_payloads: bool = True) -> GlobalGraphSnapshot:
         with self._lock:
-            artifact = self.shared_artifacts.invalidate(key, reason)
-            events = self._refresh_shared_consumers(key, "shared_artifact_invalidated", {"reason": reason})
-        for event in events:
-            self._notify(event)
-        return artifact
+            return self._snapshot(self._record, include_payloads=include_payloads)
 
-    def events(self, graph_id: str) -> tuple[GraphEvent, ...]:
+    def read_for_scheduler(self) -> GlobalGraphSnapshot:
+        return self.read(include_payloads=False)
+
+    def read_for_work(self, work_id: str) -> GlobalGraphSnapshot:
         with self._lock:
-            return tuple(copy.deepcopy(self._record(graph_id).events))
+            if work_id not in self._record.work:
+                raise GraphError(f"unknown work: {work_id}")
+            allowed = {item.artifact_node_id for item in self._record.work[work_id].input_artifacts}
+            artifacts = tuple(
+                copy.deepcopy(node) if node.node_id in allowed else replace(copy.deepcopy(node), payload=None, evidence_refs=())
+                for node in sorted(self._record.artifacts.values(), key=lambda item: item.created_order)
+            )
+            snapshot = self._snapshot(self._record, include_payloads=False)
+            return replace(snapshot, artifact_nodes=artifacts)
 
-    def write_events_jsonl(self, graph_id: str, path: str) -> None:
-        """Export the append-only graph event log for an external trace consumer."""
-        events = self.events(graph_id)
-        with open(path, "w", encoding="utf-8") as handle:
-            for event in events:
+    def events(self, task_id: str | None = None) -> tuple[GraphEvent, ...]:
+        with self._lock:
+            events = self._record.events
+            if task_id is not None:
+                events = [event for event in events if task_id in event.task_ids]
+            return tuple(copy.deepcopy(events))
+
+    def write_events_jsonl(self, path: str | Path, task_id: str | None = None) -> None:
+        with Path(path).open("w", encoding="utf-8") as handle:
+            for event in self.events(task_id):
                 handle.write(json.dumps(asdict(event), ensure_ascii=False) + "\n")
 
-    def validate_graph(self, graph_id: str) -> None:
-        """Validate the persisted topology, state, artifact, and event invariants."""
-        with self._lock:
-            self._validate_record(graph_id, self._record(graph_id))
+    def assign(self, work_id: str, assignment_id: str) -> None:
+        self._transition_assignment(work_id, assignment_id, WorkStatus.READY, WorkStatus.ASSIGNED, "assignment_created")
 
-    def export_checkpoint(self, graph_id: str) -> dict[str, object]:
-        """Export a JSON-serializable checkpoint for crash recovery."""
-        with self._lock:
-            record = self._record(graph_id)
-            self._validate_record(graph_id, record)
-            return {
-                "graph_id": graph_id,
-                "version": record.version,
-                "nodes": [asdict(record.nodes[key]) for key in sorted(record.nodes, key=lambda item: record.nodes[item].created_order)],
-                "edges": [asdict(edge) for edge in record.edges],
-                "artifacts": [asdict(record.artifacts[key]) for key in sorted(record.artifacts)],
-                "events": [asdict(event) for event in record.events],
-                "next_artifact": record.next_artifact,
-            }
+    def start(self, work_id: str, assignment_id: str) -> None:
+        self._transition_assignment(work_id, assignment_id, WorkStatus.ASSIGNED, WorkStatus.RUNNING, "assignment_started")
 
-    def restore_checkpoint(self, checkpoint: dict[str, object]) -> GraphSnapshot:
-        """Restore one graph after validating the complete checkpoint before publication."""
-        graph_id = str(checkpoint["graph_id"])
-        raw_nodes = checkpoint.get("nodes", [])
-        raw_edges = checkpoint.get("edges", [])
-        raw_artifacts = checkpoint.get("artifacts", [])
-        raw_events = checkpoint.get("events", [])
-        if not all(isinstance(value, list) for value in (raw_nodes, raw_edges, raw_artifacts, raw_events)):
-            raise GraphError("checkpoint collections must be lists")
-        nodes = {
-            str(value["node_id"]): Node(
-                node_id=str(value["node_id"]),
-                kind=NodeKind(str(value["kind"])),
-                agent_id=str(value["agent_id"]) if value.get("agent_id") is not None else None,
-                goal=str(value["goal"]),
-                predecessors=tuple(str(item) for item in value.get("predecessors", [])),
-                expected_artifact_kinds=tuple(str(item) for item in value.get("expected_artifact_kinds", [])),
-                required_resources=tuple(str(item) for item in value.get("required_resources", [])),
-                artifact_requirements=tuple(ArtifactKey.from_dict(item) for item in value.get("artifact_requirements", [])),
-                metadata=copy.deepcopy(value.get("metadata", {})),
-                status=NodeStatus(str(value["status"])),
-                assignment_id=str(value["assignment_id"]) if value.get("assignment_id") is not None else None,
-                artifact_ids=tuple(str(item) for item in value.get("artifact_ids", [])),
-                outcome=str(value["outcome"]) if value.get("outcome") is not None else None,
-                created_order=int(value.get("created_order", 0)),
-            )
-            for value in raw_nodes
-            if isinstance(value, dict)
-        }
-        edges = [
-            Edge(str(value["from_node_id"]), str(value["to_node_id"]), tuple(str(item) for item in value.get("artifact_kinds", [])))
-            for value in raw_edges
-            if isinstance(value, dict)
-        ]
-        artifacts = {
-            str(value["artifact_id"]): Artifact(
-                artifact_id=str(value["artifact_id"]),
-                producer_node_id=str(value["producer_node_id"]),
-                kind=str(value["kind"]),
-                payload=copy.deepcopy(value.get("payload", {})),
-                evidence_refs=tuple(str(item) for item in value.get("evidence_refs", [])),
-                graph_version=int(value["graph_version"]),
-            )
-            for value in raw_artifacts
-            if isinstance(value, dict)
-        }
-        events = [
-            GraphEvent(
-                graph_id=str(value["graph_id"]),
-                version=int(value["version"]),
-                kind=str(value["kind"]),
-                node_ids=tuple(str(item) for item in value.get("node_ids", [])),
-                detail=copy.deepcopy(value.get("detail", {})),
-            )
-            for value in raw_events
-            if isinstance(value, dict)
-        ]
-        record = _GraphRecord(
-            version=int(checkpoint["version"]),
-            nodes=nodes,
-            edges=edges,
-            artifacts=artifacts,
-            events=events,
-            next_artifact=int(checkpoint.get("next_artifact", len(artifacts) + 1)),
-        )
-        self._validate_record(graph_id, record)
+    def commit_work(self, work_id: str, assignment_id: str, drafts: tuple[ArtifactDraft, ...] = ()) -> GlobalGraphSnapshot:
         with self._lock:
-            if graph_id in self._graphs:
-                raise GraphError(f"graph already exists: {graph_id}")
-            self._graphs[graph_id] = record
-        return self.read(graph_id)
-
-    def assign(self, graph_id: str, node_id: str, assignment_id: str) -> None:
-        with self._lock:
-            record = self._record(graph_id)
-            node = record.nodes[node_id]
-            if node.kind is not NodeKind.WORK or node.status is not NodeStatus.READY:
-                raise GraphError(f"node is not assignable: {node_id} ({node.status})")
-            record.nodes[node_id] = replace(node, status=NodeStatus.ASSIGNED, assignment_id=assignment_id)
-            event = self._record_event(record, graph_id, "assignment_created", (node_id,), {"assignment_id": assignment_id})
-            self._validate_record(graph_id, record)
-        self._notify(event)
-
-    def start(self, graph_id: str, node_id: str, assignment_id: str) -> None:
-        with self._lock:
-            record = self._record(graph_id)
-            node = record.nodes[node_id]
-            self._require_assignment(node, assignment_id, NodeStatus.ASSIGNED)
-            record.nodes[node_id] = replace(node, status=NodeStatus.RUNNING)
-            event = self._record_event(record, graph_id, "assignment_acknowledged", (node_id,), {"assignment_id": assignment_id})
-            self._validate_record(graph_id, record)
-        self._notify(event)
-
-    def commit_node(self, graph_id: str, node_id: str, assignment_id: str, artifacts: tuple[ArtifactDraft, ...] = ()) -> GraphSnapshot:
-        with self._lock:
-            record = self._record(graph_id)
-            node = record.nodes[node_id]
-            self._require_assignment(node, assignment_id, NodeStatus.RUNNING)
-            rejection = self._completion_rejection(node, artifacts)
+            current = self._record.work.get(work_id)
+            if current is None:
+                raise GraphError(f"unknown work: {work_id}")
+            if current.status is WorkStatus.DONE and current.assignment_id == assignment_id:
+                return self.read()
+            self._require_assignment(current, assignment_id, WorkStatus.RUNNING)
+            record, index = copy.deepcopy(self._record), copy.deepcopy(self._artifact_index)
+            node = record.work[work_id]
+            rejection = self._completion_rejection(record, node, drafts)
+            task_ids = node.task_memberships
             if rejection:
-                record.nodes[node_id] = replace(node, status=NodeStatus.FAILED, outcome=rejection)
-                self._refresh_readiness(record)
-                event = self._record_event(
-                    record,
-                    graph_id,
-                    "completion_rejected",
-                    (node_id,),
-                    {"assignment_id": assignment_id, "reason": rejection},
-                )
-                # A rejected report never becomes a graph artifact.
-                artifact_ids: tuple[str, ...] = ()
+                record.work[work_id] = replace(node, status=WorkStatus.FAILED, outcome=rejection)
+                self._fail_outputs(record, index, node, rejection)
+                event_kind = "completion_rejected"
+                detail = {"assignment_id": assignment_id, "reason": rejection}
             else:
-                artifact_ids = self._publish_artifacts(record, graph_id, node_id, artifacts)
-                record.nodes[node_id] = replace(node, status=NodeStatus.DONE, artifact_ids=artifact_ids, outcome="completed")
-                self._refresh_readiness(record)
-                event = self._record_event(record, graph_id, "node_completed", (node_id,), {"assignment_id": assignment_id, "artifact_ids": artifact_ids})
-                shared_events = [
-                    item
-                    for draft in artifacts
-                    if draft.key is not None
-                    for item in self._refresh_shared_consumers(draft.key, "shared_artifact_published", {"producer_graph_id": graph_id, "producer_node_id": node_id}, exclude_graph_id=graph_id)
-                ]
-            self._validate_record(graph_id, record)
+                self._concretize_outputs(record, node, drafts)
+                report = tuple(copy.deepcopy(draft.payload) for draft in drafts)
+                record.work[work_id] = replace(node, status=WorkStatus.DONE, outcome="completed", completion_report=report)
+                event_kind = "work_completed"
+                detail = {"assignment_id": assignment_id, "artifact_ids": list(node.output_artifact_ids)}
+            self._refresh(record, self._clock())
+            event = self._record_event(record, event_kind, task_ids, (work_id, *node.output_artifact_ids), detail)
+            self._validate_record(record, index)
+            self._record, self._artifact_index = record, index
         self._notify(event)
-        for shared_event in shared_events if not rejection else ():
-            self._notify(shared_event)
-        return self.read(graph_id)
+        return self.read()
 
-    def fail_node(self, graph_id: str, node_id: str, assignment_id: str, reason: str) -> GraphSnapshot:
+    def fail_work(self, work_id: str, assignment_id: str, reason: str) -> GlobalGraphSnapshot:
         with self._lock:
-            record = self._record(graph_id)
-            node = record.nodes[node_id]
-            self._require_assignment(node, assignment_id, NodeStatus.RUNNING)
-            record.nodes[node_id] = replace(node, status=NodeStatus.FAILED, outcome=reason)
-            self._refresh_readiness(record)
-            event = self._record_event(record, graph_id, "node_failed", (node_id,), {"assignment_id": assignment_id, "reason": reason})
-            self._validate_record(graph_id, record)
+            record, index = copy.deepcopy(self._record), copy.deepcopy(self._artifact_index)
+            node = record.work.get(work_id)
+            if node is None:
+                raise GraphError(f"unknown work: {work_id}")
+            self._require_assignment(node, assignment_id, WorkStatus.RUNNING)
+            record.work[work_id] = replace(node, status=WorkStatus.FAILED, outcome=reason)
+            self._fail_outputs(record, index, node, reason)
+            self._refresh(record, self._clock())
+            event = self._record_event(record, "work_failed", node.task_memberships, (work_id,), {"reason": reason})
+            self._validate_record(record, index)
+            self._record, self._artifact_index = record, index
         self._notify(event)
-        return self.read(graph_id)
+        return self.read()
 
-    def checkpoint_and_expand(self, graph_id: str, request: CheckpointExpansion) -> GraphSnapshot:
+    def expand_work(self, request: RuntimeExpansion) -> GlobalGraphSnapshot:
         with self._lock:
-            record = self._record(graph_id)
-            origin = record.nodes[request.origin_node_id]
-            self._require_assignment(origin, request.assignment_id, NodeStatus.RUNNING)
-            if request.provider.node_id in record.nodes or request.continuation.node_id in record.nodes:
-                raise GraphError("expansion node id already exists")
-            if not self.registry.providers(request.required_capability):
-                raise GraphError(f"no registry provider for capability: {request.required_capability}")
-            if request.provider.agent_id not in {profile.app_id for profile in self.registry.profiles()}:
-                raise GraphError(f"unknown provider AppAgent: {request.provider.agent_id}")
-            if request.required_capability not in self.registry.get(request.provider.agent_id).capabilities:
-                raise GraphError("selected provider does not own requested capability")
-            if request.continuation.agent_id != origin.agent_id:
-                raise GraphError("continuation must remain owned by the origin AppAgent")
+            record, index = copy.deepcopy(self._record), copy.deepcopy(self._artifact_index)
+            origin = record.work.get(request.origin_work_id)
+            if origin is None:
+                raise GraphError(f"unknown work: {request.origin_work_id}")
+            self._require_assignment(origin, request.assignment_id, WorkStatus.RUNNING)
+            providers = self.registry.providers(request.required_capability)
+            if request.provider.agent_id not in {item.app_id for item in providers}:
+                raise GraphError("runtime expansion provider lacks the required capability")
+            task_ids = origin.task_memberships
+            if not task_ids:
+                raise GraphError("running work has no task membership")
+            now = self._clock()
 
-            successors = [edge.to_node_id for edge in record.edges if edge.from_node_id == origin.node_id]
-            checkpoint_ids = self._publish_artifacts(record, graph_id, origin.node_id, (request.checkpoint,))
-            record.nodes[origin.node_id] = replace(origin, status=NodeStatus.DONE, artifact_ids=checkpoint_ids, outcome="checkpoint")
-            next_order = max(node.created_order for node in record.nodes.values()) + 1
-            record.nodes[request.provider.node_id] = self._work_node(request.provider, next_order)
-            record.nodes[request.continuation.node_id] = self._work_node(request.continuation, next_order + 1)
-            record.edges = [edge for edge in record.edges if edge.from_node_id != origin.node_id]
-            record.edges.extend(
-                [
-                    Edge(origin.node_id, request.continuation.node_id, (request.checkpoint.kind,)),
-                    Edge(request.provider.node_id, request.continuation.node_id, request.provider.expected_artifact_kinds),
-                    *(Edge(request.continuation.node_id, successor) for successor in successors),
-                ]
+            checkpoint_id = self._new_artifact_id(record)
+            checkpoint = ArtifactNode(
+                checkpoint_id,
+                request.checkpoint.kind,
+                ArtifactState.CONCRETE,
+                origin.node_id,
+                payload=copy.deepcopy(request.checkpoint.payload),
+                evidence_refs=request.checkpoint.evidence_refs,
+                task_memberships=task_ids,
+                observed_at=request.checkpoint.observed_at or now,
+                valid_from=now,
+                valid_until=request.checkpoint.valid_until,
+                source_revision=request.checkpoint.source_revision,
+                created_order=self._created_order(record),
             )
-            self._refresh_readiness(record)
+            record.artifacts[checkpoint_id] = checkpoint
+            self._append_edge(record, DependencyEdge(origin.node_id, checkpoint_id, EdgeKind.PRODUCES))
+
+            continuation_id = self._new_work_id(record)
+            continuation = WorkNode(
+                continuation_id,
+                request.continuation.agent_id,
+                request.continuation.goal,
+                input_artifacts=(ArtifactRequirement(checkpoint_id),),
+                required_resources=request.continuation.required_resources,
+                task_memberships=task_ids,
+                metadata=copy.deepcopy(request.continuation.metadata),
+                created_order=self._created_order(record),
+            )
+            record.work[continuation_id] = continuation
+            record.artifacts[checkpoint_id] = replace(checkpoint, consumer_work_ids=(continuation_id,))
+            self._append_edge(record, DependencyEdge(checkpoint_id, continuation_id, EdgeKind.CONSUMES))
+
+            key = self._canonical_key(request.identity, task_ids) if request.identity is not None else None
+            existing = self._active_artifact(record, index, key, request.freshness_requirement_seconds, now) if key else None
+            if existing is not None:
+                requested = self._attach_consumers(record, existing, (continuation_id,), task_ids[0])
+                record.artifacts[requested.node_id] = replace(
+                    requested,
+                    task_memberships=tuple(sorted(set((*requested.task_memberships, *task_ids)))),
+                )
+                provider_id = requested.producer_work_id
+            else:
+                provider_id = self._new_work_id(record)
+                requested_id = self._new_artifact_id(record)
+                record.work[provider_id] = WorkNode(
+                    provider_id,
+                    request.provider.agent_id,
+                    request.provider.goal,
+                    output_artifact_ids=(requested_id,),
+                    required_resources=request.provider.required_resources,
+                    task_memberships=task_ids,
+                    metadata=copy.deepcopy(request.provider.metadata),
+                    created_order=self._created_order(record),
+                )
+                requested = ArtifactNode(
+                    requested_id,
+                    request.artifact_kind,
+                    ArtifactState.FUTURE,
+                    provider_id,
+                    (continuation_id,),
+                    key,
+                    ReusePolicy.INDEXED if key is not None else ReusePolicy.UNINDEXED,
+                    len(index.history(key)) + 1 if key is not None else 1,
+                    task_memberships=task_ids,
+                    created_order=self._created_order(record),
+                )
+                record.artifacts[requested_id] = requested
+                self._append_edge(record, DependencyEdge(provider_id, requested_id, EdgeKind.PRODUCES))
+                if key is not None:
+                    index.register(key, requested_id)
+            record.work[continuation_id] = replace(
+                record.work[continuation_id],
+                input_artifacts=(*record.work[continuation_id].input_artifacts, ArtifactRequirement(requested.node_id, request.freshness_requirement_seconds)),
+            )
+            self._append_edge(record, DependencyEdge(requested.node_id, continuation_id, EdgeKind.CONSUMES))
+
+            rewired: list[DependencyEdge] = []
+            for edge in record.edges:
+                if edge.kind is EdgeKind.PRECEDES and edge.from_node_id == origin.node_id:
+                    successor = record.work[edge.to_node_id]
+                    record.work[edge.to_node_id] = replace(
+                        successor,
+                        control_predecessors=tuple(continuation_id if item == origin.node_id else item for item in successor.control_predecessors),
+                    )
+                    rewired.append(DependencyEdge(continuation_id, edge.to_node_id, EdgeKind.PRECEDES))
+                else:
+                    rewired.append(edge)
+            record.edges = rewired
+            record.work[origin.node_id] = replace(
+                origin,
+                status=WorkStatus.DONE,
+                outcome="checkpoint",
+                output_artifact_ids=self._append_unique(origin.output_artifact_ids, checkpoint_id),
+                completion_report=(copy.deepcopy(request.checkpoint.payload),),
+            )
+            self._append_edge(record, DependencyEdge(origin.node_id, continuation_id, EdgeKind.PRECEDES))
+            record.work[continuation_id] = replace(
+                record.work[continuation_id],
+                control_predecessors=self._append_unique(record.work[continuation_id].control_predecessors, origin.node_id),
+            )
+            for task_id in task_ids:
+                task = record.tasks[task_id]
+                terminal = tuple(continuation_id if item == origin.node_id else item for item in task.terminal_work_ids)
+                record.tasks[task_id] = replace(
+                    task,
+                    terminal_work_ids=terminal,
+                    referenced_work_ids=tuple(sorted(set((*task.referenced_work_ids, provider_id, continuation_id)), key=lambda item: record.work[item].created_order)),
+                    referenced_artifact_ids=tuple(sorted(set((*task.referenced_artifact_ids, checkpoint_id, requested.node_id)), key=lambda item: record.artifacts[item].created_order)),
+                )
+            self._refresh(record, now)
             event = self._record_event(
                 record,
-                graph_id,
-                "graph_expanded",
-                (origin.node_id, request.provider.node_id, request.continuation.node_id, *successors),
+                "work_expanded",
+                task_ids,
+                (origin.node_id, provider_id, requested.node_id, continuation_id),
                 {"request_kind": request.request_kind, "required_capability": request.required_capability},
             )
-            self._validate_record(graph_id, record)
+            self._validate_record(record, index)
+            self._record, self._artifact_index = record, index
         self._notify(event)
-        return self.read(graph_id)
+        return self.read()
 
-    def evaluate_sink(self, graph_id: str, *, success: bool, evidence_refs: tuple[str, ...] = ()) -> GraphSnapshot:
+    def invalidate_artifact(self, artifact_node_id: str, reason: str) -> ArtifactNode:
         with self._lock:
-            record = self._record(graph_id)
-            sinks = [node for node in record.nodes.values() if node.kind is NodeKind.SINK]
-            if len(sinks) != 1 or sinks[0].status is not NodeStatus.READY:
-                raise GraphError("sink is not ready for evaluation")
-            sink = sinks[0]
-            record.nodes[sink.node_id] = replace(sink, status=NodeStatus.DONE if success else NodeStatus.FAILED, outcome="evaluation", metadata={"evidence_refs": evidence_refs})
-            event = self._record_event(record, graph_id, "sink_evaluated", (sink.node_id,), {"success": success})
-            self._validate_record(graph_id, record)
+            record, index = copy.deepcopy(self._record), copy.deepcopy(self._artifact_index)
+            artifact = record.artifacts.get(artifact_node_id)
+            if artifact is None:
+                raise GraphError(f"unknown artifact: {artifact_node_id}")
+            if artifact.state not in {ArtifactState.FUTURE, ArtifactState.CONCRETE}:
+                raise GraphError(f"artifact is not active: {artifact.state}")
+            artifact = replace(artifact, state=ArtifactState.INVALIDATED, failure_reason=reason)
+            record.artifacts[artifact_node_id] = artifact
+            if artifact.key is not None:
+                index.retire(artifact.key, artifact_node_id)
+            self._refresh(record, self._clock())
+            event = self._record_event(record, "artifact_invalidated", artifact.task_memberships, (artifact_node_id,), {"reason": reason})
+            self._validate_record(record, index)
+            self._record, self._artifact_index = record, index
         self._notify(event)
-        return self.read(graph_id)
+        return copy.deepcopy(artifact)
 
-    def _work_node(self, spec: WorkSpec, created_order: int) -> Node:
-        return Node(spec.node_id, NodeKind.WORK, spec.agent_id, spec.goal, expected_artifact_kinds=spec.expected_artifact_kinds, required_resources=spec.required_resources, artifact_requirements=spec.artifact_requirements, metadata=copy.deepcopy(spec.metadata), created_order=created_order)
+    def sweep_expired(self, now: float | None = None) -> tuple[str, ...]:
+        with self._lock:
+            current = self._clock() if now is None else now
+            record, index = copy.deepcopy(self._record), copy.deepcopy(self._artifact_index)
+            expired = []
+            for artifact in record.artifacts.values():
+                if artifact.state is ArtifactState.CONCRETE and artifact.valid_until is not None and current > artifact.valid_until:
+                    record.artifacts[artifact.node_id] = replace(artifact, state=ArtifactState.INVALIDATED, failure_reason="expired")
+                    if artifact.key is not None:
+                        index.retire(artifact.key, artifact.node_id)
+                    expired.append(artifact.node_id)
+            if not expired:
+                return ()
+            self._refresh(record, current)
+            task_ids = tuple(sorted({task for node_id in expired for task in record.artifacts[node_id].task_memberships}))
+            event = self._record_event(record, "artifacts_expired", task_ids, tuple(expired))
+            self._validate_record(record, index)
+            self._record, self._artifact_index = record, index
+        self._notify(event)
+        return tuple(expired)
 
-    def _publish_artifacts(self, record: _GraphRecord, graph_id: str, node_id: str, drafts: tuple[ArtifactDraft, ...]) -> tuple[str, ...]:
-        artifact_ids = []
-        for draft in drafts:
-            artifact_id = f"A{record.next_artifact}"
-            record.next_artifact += 1
-            if draft.key is not None:
-                self.shared_artifacts.publish(draft.key, graph_id, node_id, draft.payload, draft.evidence_refs)
-            record.artifacts[artifact_id] = Artifact(artifact_id, node_id, draft.kind, copy.deepcopy(draft.payload), tuple(draft.evidence_refs), record.version + 1)
-            artifact_ids.append(artifact_id)
-        return tuple(artifact_ids)
+    def refresh_readiness(self, now: float | None = None) -> bool:
+        """Recheck time-sensitive Artifact requirements before scheduling."""
+        with self._lock:
+            current = self._clock() if now is None else now
+            record, index = copy.deepcopy(self._record), copy.deepcopy(self._artifact_index)
+            changed_nodes: set[str] = set()
+            for artifact in tuple(record.artifacts.values()):
+                if artifact.state is ArtifactState.CONCRETE and artifact.valid_until is not None and current > artifact.valid_until:
+                    record.artifacts[artifact.node_id] = replace(artifact, state=ArtifactState.INVALIDATED, failure_reason="expired")
+                    if artifact.key is not None:
+                        index.retire(artifact.key, artifact.node_id)
+                    changed_nodes.add(artifact.node_id)
+            before = {node_id: node.status for node_id, node in record.work.items()}
+            self._refresh(record, current)
+            changed_nodes.update(node_id for node_id, node in record.work.items() if node.status is not before[node_id])
+            if not changed_nodes:
+                return False
+            task_ids = tuple(sorted({task_id for node_id in changed_nodes for task_id in self._node_task_ids(record, node_id)}))
+            event = self._record_event(record, "readiness_refreshed", task_ids, tuple(sorted(changed_nodes)))
+            self._validate_record(record, index)
+            self._record, self._artifact_index = record, index
+        self._notify(event)
+        return True
 
-    @staticmethod
-    def _completion_rejection(node: Node, drafts: tuple[ArtifactDraft, ...]) -> str | None:
-        """Validate the generic graph delivery contract before publishing a result."""
-        expected = set(node.expected_artifact_kinds)
-        if not expected and not drafts:
+    def evaluate_task(self, task_id: str, *, success: bool, outcome: str = "") -> TaskRecord:
+        with self._lock:
+            record = copy.deepcopy(self._record)
+            task = record.tasks.get(task_id)
+            if task is None:
+                raise GraphError(f"unknown task: {task_id}")
+            if success and task.status is not TaskStatus.READY_FOR_EVALUATION:
+                raise GraphError("task is not ready for successful evaluation")
+            record.tasks[task_id] = replace(task, status=TaskStatus.DONE if success else TaskStatus.FAILED, outcome=outcome)
+            event = self._record_event(record, "task_evaluated", (task_id,), task.terminal_work_ids, {"success": success})
+            self._validate_record(record, self._artifact_index)
+            self._record = record
+        self._notify(event)
+        return self.read().task(task_id)
+
+    def artifact_by_key(self, key: ArtifactKey) -> ArtifactNode | None:
+        with self._lock:
+            node_id = self._artifact_index.active(key)
+            return copy.deepcopy(self._record.artifacts[node_id]) if node_id else None
+
+    def artifact_history(self, key: ArtifactKey) -> tuple[ArtifactNode, ...]:
+        with self._lock:
+            return tuple(copy.deepcopy(self._record.artifacts[item]) for item in self._artifact_index.history(key))
+
+    def validate(self) -> None:
+        with self._lock:
+            self._validate_record(self._record, self._artifact_index)
+
+    def rebuild_artifact_index(self) -> None:
+        with self._lock:
+            index = ArtifactIndex()
+            index.rebuild(self._record.artifacts.values())
+            self._validate_record(self._record, index)
+            self._artifact_index = index
+
+    def export_checkpoint(self) -> dict[str, object]:
+        with self._lock:
+            self._validate_record(self._record, self._artifact_index)
+            return {
+                "version": self._record.version,
+                "work": [asdict(item) for item in sorted(self._record.work.values(), key=lambda node: node.created_order)],
+                "artifacts": [self._artifact_dict(item) for item in sorted(self._record.artifacts.values(), key=lambda node: node.created_order)],
+                "edges": [asdict(item) for item in self._record.edges],
+                "tasks": [asdict(item) for item in sorted(self._record.tasks.values(), key=lambda task: task.submitted_at)],
+                "events": [asdict(item) for item in self._record.events],
+                "next_work": self._record.next_work,
+                "next_artifact": self._record.next_artifact,
+                "next_created_order": self._record.next_created_order,
+                "artifact_index": self._artifact_index.snapshot(),
+            }
+
+    def restore_checkpoint(self, checkpoint: dict[str, object]) -> GlobalGraphSnapshot:
+        record = self._record_from_checkpoint(checkpoint)
+        index = ArtifactIndex()
+        index.rebuild(record.artifacts.values())
+        if checkpoint.get("artifact_index") != index.snapshot():
+            raise GraphError("checkpoint ArtifactIndex does not match graph state")
+        self._validate_record(record, index)
+        with self._lock:
+            if self._record.version or self._record.work or self._record.tasks:
+                raise GraphError("restore requires an empty GraphSteward")
+            self._record, self._artifact_index = record, index
+        return self.read()
+
+    def _transition_assignment(self, work_id: str, assignment_id: str, expected: WorkStatus, target: WorkStatus, event_kind: str) -> None:
+        with self._lock:
+            record = copy.deepcopy(self._record)
+            node = record.work.get(work_id)
+            if node is None or node.status is not expected:
+                raise GraphError(f"work is not {expected}: {work_id}")
+            if expected is WorkStatus.ASSIGNED and node.assignment_id != assignment_id:
+                raise GraphError("assignment ownership mismatch")
+            record.work[work_id] = replace(node, status=target, assignment_id=assignment_id)
+            event = self._record_event(record, event_kind, node.task_memberships, (work_id,), {"assignment_id": assignment_id})
+            self._validate_record(record, self._artifact_index)
+            self._record = record
+        self._notify(event)
+
+    def _canonical_key(self, candidate: ArtifactIdentityCandidate, task_ids: tuple[str, ...]) -> ArtifactKey:
+        try:
+            schema = self.registry.artifact_schema(candidate.schema_id)
+            scope_override = None
+            if schema.sharing_scope == "task":
+                if len(task_ids) != 1:
+                    raise ValueError("task-scoped Artifact identity requires exactly one task membership")
+                scope_override = f"task:{task_ids[0]}"
+            return schema.canonicalize(candidate, scope_override=scope_override)
+        except (KeyError, ValueError) as exc:
+            raise GraphError(f"invalid Artifact identity: {exc}") from exc
+
+    def _active_artifact(
+        self,
+        record: _GlobalGraphRecord,
+        index: ArtifactIndex,
+        key: ArtifactKey,
+        max_age_seconds: float | None,
+        now: float,
+    ) -> ArtifactNode | None:
+        node_id = index.active(key)
+        if node_id is None:
             return None
-        produced = {draft.kind for draft in drafts}
-        missing = expected - produced
-        if missing:
-            return f"completion missing required artifact kinds: {', '.join(sorted(missing))}"
-        if not drafts:
-            return "completion produced no artifact"
-        for draft in drafts:
-            if draft.key is not None and draft.key.artifact_type != draft.kind:
-                return f"completion artifact kind does not match shared ArtifactKey: {draft.kind}"
-            value = draft.payload.get("value")
-            evidence = draft.payload.get("evidence")
-            if not GraphSteward._has_content(value):
-                return f"completion artifact {draft.kind} has no result value"
-            if not GraphSteward._has_content(evidence):
-                return f"completion artifact {draft.kind} has no supporting evidence"
+        artifact = record.artifacts[node_id]
+        if artifact.state is ArtifactState.FUTURE:
+            return artifact
+        if self._artifact_satisfies(artifact, max_age_seconds, now):
+            return artifact
+        record.artifacts[node_id] = replace(artifact, state=ArtifactState.INVALIDATED, failure_reason="stale for new consumer")
+        index.retire(key, node_id)
         return None
 
     @staticmethod
-    def _has_content(value: object) -> bool:
-        if value is None:
+    def _artifact_satisfies(artifact: ArtifactNode, max_age_seconds: float | None, now: float) -> bool:
+        if artifact.state is not ArtifactState.CONCRETE:
             return False
-        if isinstance(value, str):
-            return bool(value.strip())
-        if isinstance(value, (tuple, list, dict, set)):
-            return bool(value)
+        if artifact.valid_from is not None and now < artifact.valid_from:
+            return False
+        if artifact.valid_until is not None and now > artifact.valid_until:
+            return False
+        if max_age_seconds is not None:
+            if artifact.observed_at is None or now - artifact.observed_at > max_age_seconds:
+                return False
         return True
 
-    def _refresh_readiness(self, record: _GraphRecord) -> None:
-        predecessors: dict[str, list[str]] = {node_id: [] for node_id in record.nodes}
-        for edge in record.edges:
-            predecessors[edge.to_node_id].append(edge.from_node_id)
-        for node_id, node in list(record.nodes.items()):
-            if node.kind is NodeKind.SOURCE or node.status not in {NodeStatus.BLOCKED, NodeStatus.READY}:
+    def _refresh(self, record: _GlobalGraphRecord, now: float) -> None:
+        for work_id, node in list(record.work.items()):
+            if node.status in {WorkStatus.ASSIGNED, WorkStatus.RUNNING, WorkStatus.DONE, WorkStatus.FAILED}:
                 continue
-            prior = predecessors[node_id]
-            failed = tuple(item for item in prior if record.nodes[item].status is NodeStatus.FAILED)
-            metadata = dict(node.metadata)
-            requirements_ready = all(
-                (shared := self.shared_artifacts.read(key)) is not None and shared.state is ArtifactState.CONCRETE
-                for key in node.artifact_requirements
+            predecessor_states = [record.work[item].status for item in node.control_predecessors]
+            artifacts_ready = all(
+                self._artifact_satisfies(record.artifacts[item.artifact_node_id], item.max_age_seconds, now)
+                for item in node.input_artifacts
             )
+            status = WorkStatus.READY if all(item is WorkStatus.DONE for item in predecessor_states) and artifacts_ready else WorkStatus.BLOCKED
+            failed = tuple(item for item in node.control_predecessors if record.work[item].status is WorkStatus.FAILED)
+            metadata = copy.deepcopy(node.metadata)
             if failed:
                 metadata["blocked_by_failed_predecessors"] = failed
-                record.nodes[node_id] = replace(node, predecessors=tuple(prior), metadata=metadata, status=NodeStatus.BLOCKED)
-            elif prior and all(record.nodes[item].status is NodeStatus.DONE for item in prior) and requirements_ready:
-                metadata.pop("blocked_by_failed_predecessors", None)
-                record.nodes[node_id] = replace(node, predecessors=tuple(prior), metadata=metadata, status=NodeStatus.READY)
-            elif not prior and node.kind is NodeKind.WORK and requirements_ready:
-                metadata.pop("blocked_by_failed_predecessors", None)
-                record.nodes[node_id] = replace(node, predecessors=(), metadata=metadata, status=NodeStatus.READY)
             else:
                 metadata.pop("blocked_by_failed_predecessors", None)
-                record.nodes[node_id] = replace(node, predecessors=tuple(prior), metadata=metadata, status=NodeStatus.BLOCKED)
-
-    def _refresh_shared_consumers(
-        self,
-        key: ArtifactKey,
-        event_kind: str,
-        detail: dict[str, object],
-        *,
-        exclude_graph_id: str | None = None,
-    ) -> list[GraphEvent]:
-        shared = self.shared_artifacts.read(key)
-        if shared is None:
-            return []
-        events: list[GraphEvent] = []
-        for graph_id, node_id in shared.consumers:
-            if graph_id == exclude_graph_id:
+            record.work[work_id] = replace(node, status=status, metadata=metadata)
+        for task_id, task in list(record.tasks.items()):
+            if task.status in {TaskStatus.DONE, TaskStatus.FAILED}:
                 continue
-            record = self._record(graph_id)
-            self._refresh_readiness(record)
-            event = self._record_event(record, graph_id, event_kind, (node_id,), {"artifact_key": key.to_dict(), **detail})
-            self._validate_record(graph_id, record)
-            events.append(event)
-        return events
+            terminals = [record.work[item].status for item in task.terminal_work_ids]
+            if terminals and all(item is WorkStatus.DONE for item in terminals):
+                status = TaskStatus.READY_FOR_EVALUATION
+            elif any(item is WorkStatus.FAILED for item in terminals):
+                status = TaskStatus.FAILED
+            else:
+                status = TaskStatus.ACTIVE
+            record.tasks[task_id] = replace(task, status=status)
 
-    def _record_event(self, record: _GraphRecord, graph_id: str, kind: str, node_ids: tuple[str, ...], detail: dict[str, object] | None = None) -> GraphEvent:
+    def _completion_rejection(self, record: _GlobalGraphRecord, node: WorkNode, drafts: tuple[ArtifactDraft, ...]) -> str | None:
+        expected = [record.artifacts[item] for item in node.output_artifact_ids]
+        if expected and len(drafts) != len(expected):
+            return "completion does not provide every expected Artifact"
+        used: set[int] = set()
+        for artifact in expected:
+            matches = [
+                (index, draft)
+                for index, draft in enumerate(drafts)
+                if index not in used and (draft.artifact_node_id == artifact.node_id or (draft.artifact_node_id is None and draft.kind == artifact.kind))
+            ]
+            if len(matches) != 1:
+                return f"completion cannot uniquely match Artifact {artifact.node_id}"
+            index, draft = matches[0]
+            used.add(index)
+            if artifact.state is not ArtifactState.FUTURE or artifact.producer_work_id != node.node_id:
+                return f"Artifact {artifact.node_id} is not publishable by this WORK"
+            value, evidence = draft.payload.get("value"), draft.payload.get("evidence")
+            if value in (None, "", [], {}):
+                return f"Artifact {artifact.node_id} has no result value"
+            if not isinstance(evidence, list) or not evidence:
+                return f"Artifact {artifact.node_id} has no evidence"
+        return None
+
+    def _concretize_outputs(self, record: _GlobalGraphRecord, node: WorkNode, drafts: tuple[ArtifactDraft, ...]) -> None:
+        now = self._clock()
+        for artifact_id in node.output_artifact_ids:
+            artifact = record.artifacts[artifact_id]
+            draft = next(
+                item for item in drafts
+                if item.artifact_node_id == artifact_id or (item.artifact_node_id is None and item.kind == artifact.kind)
+            )
+            observed_at = draft.observed_at or now
+            valid_until = draft.valid_until
+            if valid_until is None and artifact.key is not None:
+                ttl = self.registry.artifact_schema(artifact.key.schema_id).default_freshness_seconds
+                valid_until = observed_at + ttl if ttl is not None else None
+            record.artifacts[artifact_id] = replace(
+                artifact,
+                state=ArtifactState.CONCRETE,
+                payload=copy.deepcopy(draft.payload),
+                evidence_refs=draft.evidence_refs,
+                observed_at=observed_at,
+                valid_from=observed_at,
+                valid_until=valid_until,
+                source_revision=draft.source_revision,
+            )
+
+    @staticmethod
+    def _fail_outputs(record: _GlobalGraphRecord, index: ArtifactIndex, node: WorkNode, reason: str) -> None:
+        for artifact_id in node.output_artifact_ids:
+            artifact = record.artifacts[artifact_id]
+            if artifact.state is not ArtifactState.FUTURE:
+                continue
+            record.artifacts[artifact_id] = replace(artifact, state=ArtifactState.FAILED, failure_reason=reason)
+            if artifact.key is not None:
+                index.retire(artifact.key, artifact_id)
+
+    def _validate_fragment(self, fragment: GraphFragment) -> None:
+        if not fragment.task_id.strip() or fragment.task_id in self._record.tasks:
+            raise GraphError("task id is empty or already exists")
+        if not fragment.work:
+            raise GraphError("task fragment contains no WORK")
+        ids = [item.node_id for item in fragment.work]
+        if len(ids) != len(set(ids)):
+            raise GraphError("task fragment contains duplicate local WORK ids")
+        for work in fragment.work:
+            self._validate_work_spec(work)
+        known = set(ids)
+        artifact_ids = [item.local_id for item in fragment.artifacts]
+        if len(artifact_ids) != len(set(artifact_ids)) or known.intersection(artifact_ids):
+            raise GraphError("task fragment contains duplicate local node ids")
+        providers = {item.producer_work_id for item in fragment.artifacts}
+        control_participants = {item.from_work_id for item in fragment.control_edges} | {item.to_work_id for item in fragment.control_edges}
+        if providers.intersection(control_participants):
+            raise GraphError("Artifact provider WORK must express handoff through its Artifact")
+        producer_counts: dict[str, int] = {}
+        for artifact in fragment.artifacts:
+            if artifact.producer_work_id not in known or not set(artifact.consumer_work_ids).issubset(known):
+                raise GraphError("ArtifactSpec refers to unknown WORK")
+            producer_counts[artifact.producer_work_id] = producer_counts.get(artifact.producer_work_id, 0) + 1
+        if any(count != 1 for count in producer_counts.values()):
+            raise GraphError("one provider WORK must produce one dependency-bearing Artifact")
+        for edge in fragment.control_edges:
+            if edge.from_work_id not in known or edge.to_work_id not in known:
+                raise GraphError("control edge refers to unknown WORK")
+        if fragment.terminal_work_ids and not set(fragment.terminal_work_ids).issubset(known):
+            raise GraphError("terminal WORK refers to unknown local id")
+
+    def _validate_work_spec(self, work: WorkSpec) -> None:
+        if work.agent_id not in {item.app_id for item in self.registry.profiles()}:
+            raise GraphError(f"unknown AppAgent: {work.agent_id}")
+        if not work.node_id.strip() or not work.goal.strip():
+            raise GraphError("WORK requires local id and goal")
+
+    def _validate_record(self, record: _GlobalGraphRecord, index: ArtifactIndex) -> None:
+        node_ids = set(record.work) | set(record.artifacts)
+        if len(node_ids) != len(record.work) + len(record.artifacts):
+            raise GraphError("WORK and Artifact node ids overlap")
+        if len(record.edges) != len(set(record.edges)):
+            raise GraphError("global graph contains duplicate dependency edges")
+        for edge in record.edges:
+            if edge.from_node_id not in node_ids or edge.to_node_id not in node_ids:
+                raise GraphError("dependency edge has a dangling endpoint")
+            if edge.kind is EdgeKind.PRECEDES and (edge.from_node_id not in record.work or edge.to_node_id not in record.work):
+                raise GraphError("PRECEDES must connect WORK to WORK")
+            if edge.kind is EdgeKind.PRODUCES and (edge.from_node_id not in record.work or edge.to_node_id not in record.artifacts):
+                raise GraphError("PRODUCES must connect WORK to Artifact")
+            if edge.kind is EdgeKind.CONSUMES and (edge.from_node_id not in record.artifacts or edge.to_node_id not in record.work):
+                raise GraphError("CONSUMES must connect Artifact to WORK")
+        edge_set = set(record.edges)
+        for work in record.work.values():
+            if work.agent_id not in {item.app_id for item in self.registry.profiles()}:
+                raise GraphError("global graph contains an unknown AppAgent")
+            if any(item not in record.work for item in work.control_predecessors):
+                raise GraphError("WORK has an unknown control predecessor")
+            if any(item.artifact_node_id not in record.artifacts for item in work.input_artifacts):
+                raise GraphError("WORK has an unknown Artifact requirement")
+            if any(item not in record.artifacts for item in work.output_artifact_ids):
+                raise GraphError("WORK has an unknown output Artifact")
+            if any(DependencyEdge(item, work.node_id, EdgeKind.PRECEDES) not in edge_set for item in work.control_predecessors):
+                raise GraphError("WORK control predecessor lacks PRECEDES edge")
+            if any(DependencyEdge(item.artifact_node_id, work.node_id, EdgeKind.CONSUMES) not in edge_set for item in work.input_artifacts):
+                raise GraphError("WORK input requirement lacks CONSUMES edge")
+            if any(DependencyEdge(work.node_id, item, EdgeKind.PRODUCES) not in edge_set for item in work.output_artifact_ids):
+                raise GraphError("WORK output lacks PRODUCES edge")
+            if work.status in {WorkStatus.ASSIGNED, WorkStatus.RUNNING} and not work.assignment_id:
+                raise GraphError("active WORK lacks assignment ownership")
+        for artifact in record.artifacts.values():
+            if artifact.producer_work_id not in record.work:
+                raise GraphError("Artifact has an unknown producer")
+            if any(item not in record.work for item in artifact.consumer_work_ids):
+                raise GraphError("Artifact has an unknown consumer")
+            if DependencyEdge(artifact.producer_work_id, artifact.node_id, EdgeKind.PRODUCES) not in edge_set:
+                raise GraphError("Artifact producer lacks PRODUCES edge")
+            if any(DependencyEdge(artifact.node_id, item, EdgeKind.CONSUMES) not in edge_set for item in artifact.consumer_work_ids):
+                raise GraphError("Artifact consumer lacks CONSUMES edge")
+            if artifact.state is ArtifactState.CONCRETE and artifact.payload is None:
+                raise GraphError("CONCRETE Artifact lacks payload")
+            if artifact.reuse_policy is ReusePolicy.INDEXED and artifact.key is None:
+                raise GraphError("indexed Artifact lacks a key")
+        for task in record.tasks.values():
+            if any(item not in record.work for item in (*task.entry_work_ids, *task.terminal_work_ids, *task.referenced_work_ids)):
+                raise GraphError("TaskRecord refers to unknown WORK")
+            if any(item not in record.artifacts for item in task.referenced_artifact_ids):
+                raise GraphError("TaskRecord refers to unknown Artifact")
+        self._validate_acyclic(record)
+        rebuilt = ArtifactIndex()
+        try:
+            rebuilt.rebuild(record.artifacts.values())
+        except ArtifactIndexError as exc:
+            raise GraphError(str(exc)) from exc
+        if rebuilt.snapshot() != index.snapshot():
+            raise GraphError("ArtifactIndex diverges from global graph")
+        if record.events and ([item.version for item in record.events] != list(range(1, record.version + 1))):
+            raise GraphError("graph event versions are not contiguous")
+
+    @staticmethod
+    def _validate_acyclic(record: _GlobalGraphRecord) -> None:
+        nodes = set(record.work) | set(record.artifacts)
+        successors = {item: [] for item in nodes}
+        indegree = {item: 0 for item in nodes}
+        for edge in record.edges:
+            successors[edge.from_node_id].append(edge.to_node_id)
+            indegree[edge.to_node_id] += 1
+        ready = [item for item, degree in indegree.items() if degree == 0]
+        seen = 0
+        while ready:
+            current = ready.pop()
+            seen += 1
+            for successor in successors[current]:
+                indegree[successor] -= 1
+                if indegree[successor] == 0:
+                    ready.append(successor)
+        if seen != len(nodes):
+            raise GraphError("global execution graph must remain acyclic")
+
+    @staticmethod
+    def _attach_consumers(record: _GlobalGraphRecord, artifact: ArtifactNode, consumers: tuple[str, ...], task_id: str) -> ArtifactNode:
+        return replace(
+            artifact,
+            consumer_work_ids=tuple(sorted(set((*artifact.consumer_work_ids, *consumers)))),
+            task_memberships=tuple(sorted(set((*artifact.task_memberships, task_id)))),
+        )
+
+    @staticmethod
+    def _add_membership(node: WorkNode, task_id: str) -> WorkNode:
+        return replace(node, task_memberships=tuple(sorted(set((*node.task_memberships, task_id)))))
+
+    @staticmethod
+    def _append_unique(values: tuple, value):
+        return values if value in values else (*values, value)
+
+    @staticmethod
+    def _append_edge(record: _GlobalGraphRecord, edge: DependencyEdge) -> None:
+        if edge not in record.edges:
+            record.edges.append(edge)
+
+    @staticmethod
+    def _require_assignment(node: WorkNode, assignment_id: str, status: WorkStatus) -> None:
+        if node.status is not status or node.assignment_id != assignment_id:
+            raise GraphError("assignment ownership or WORK state mismatch")
+
+    @staticmethod
+    def _new_work_id(record: _GlobalGraphRecord) -> str:
+        node_id = f"W{record.next_work:06d}"
+        record.next_work += 1
+        return node_id
+
+    @staticmethod
+    def _new_artifact_id(record: _GlobalGraphRecord) -> str:
+        node_id = f"A{record.next_artifact:06d}"
+        record.next_artifact += 1
+        return node_id
+
+    @staticmethod
+    def _created_order(record: _GlobalGraphRecord) -> int:
+        value = record.next_created_order
+        record.next_created_order += 1
+        return value
+
+    @staticmethod
+    def _entry_work_ids(record: _GlobalGraphRecord, work_ids: set[str]) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                (item for item in work_ids if not record.work[item].control_predecessors and not record.work[item].input_artifacts),
+                key=lambda item: record.work[item].created_order,
+            )
+        )
+
+    @staticmethod
+    def _terminal_work_ids(record: _GlobalGraphRecord, fragment: GraphFragment, local_map: dict[str, str], work_ids: set[str]) -> tuple[str, ...]:
+        if fragment.terminal_work_ids:
+            return tuple(local_map[item] for item in fragment.terminal_work_ids)
+        outgoing = {
+            edge.from_node_id
+            for edge in record.edges
+            if edge.kind in {EdgeKind.PRECEDES, EdgeKind.PRODUCES} and edge.from_node_id in work_ids
+        }
+        return tuple(sorted(work_ids - outgoing, key=lambda item: record.work[item].created_order))
+
+    @staticmethod
+    def _record_event(
+        record: _GlobalGraphRecord,
+        kind: str,
+        task_ids: tuple[str, ...],
+        node_ids: tuple[str, ...],
+        detail: dict[str, object] | None = None,
+    ) -> GraphEvent:
         record.version += 1
-        event = GraphEvent(graph_id, record.version, kind, node_ids, dict(detail or {}))
+        event = GraphEvent(record.version, kind, tuple(sorted(set(task_ids))), node_ids, dict(detail or {}))
         record.events.append(event)
         return event
 
-    def _validate_edges(self, nodes: dict[str, Node], edges: tuple[Edge, ...]) -> None:
-        for edge in edges:
-            if edge.from_node_id not in nodes or edge.to_node_id not in nodes:
-                raise GraphError(f"edge refers to unknown node: {edge}")
-            if edge.from_node_id == edge.to_node_id:
-                raise GraphError("self edge is not allowed")
-        successors: dict[str, list[str]] = {node_id: [] for node_id in nodes}
-        for edge in edges:
-            successors[edge.from_node_id].append(edge.to_node_id)
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def visit(node_id: str) -> None:
-            if node_id in visiting:
-                raise GraphError("execution graph must be acyclic")
-            if node_id in visited:
-                return
-            visiting.add(node_id)
-            for successor in successors[node_id]:
-                visit(successor)
-            visiting.remove(node_id)
-            visited.add(node_id)
-
-        for node_id in nodes:
-            visit(node_id)
-
-    def _validate_record(self, graph_id: str, record: _GraphRecord) -> None:
-        self._validate_edges(record.nodes, tuple(record.edges))
-        sources = [node for node in record.nodes.values() if node.kind is NodeKind.SOURCE]
-        sinks = [node for node in record.nodes.values() if node.kind is NodeKind.SINK]
-        if len(sources) != 1 or len(sinks) != 1:
-            raise GraphError("graph must contain exactly one SOURCE and one SINK")
-        known_agents = {profile.app_id for profile in self.registry.profiles()}
-        for node in record.nodes.values():
-            if node.kind is NodeKind.WORK and node.agent_id not in known_agents:
-                raise GraphError(f"unknown AppAgent in graph state: {node.agent_id}")
-            if node.status in {NodeStatus.ASSIGNED, NodeStatus.RUNNING} and not node.assignment_id:
-                raise GraphError(f"active node has no assignment: {node.node_id}")
-            for artifact_id in node.artifact_ids:
-                artifact = record.artifacts.get(artifact_id)
-                if artifact is None or artifact.producer_node_id != node.node_id:
-                    raise GraphError(f"invalid artifact ownership: {artifact_id}")
-        for artifact in record.artifacts.values():
-            producer = record.nodes.get(artifact.producer_node_id)
-            if producer is None or artifact.artifact_id not in producer.artifact_ids:
-                raise GraphError(f"artifact has no producer reference: {artifact.artifact_id}")
-        if any(event.graph_id != graph_id for event in record.events):
-            raise GraphError("checkpoint contains an event for another graph")
-        versions = [event.version for event in record.events]
-        if versions != sorted(set(versions)) or (versions and versions[-1] != record.version):
-            raise GraphError("event versions do not match graph version")
-
-    def _record(self, graph_id: str) -> _GraphRecord:
-        try:
-            return self._graphs[graph_id]
-        except KeyError as exc:
-            raise GraphError(f"unknown graph: {graph_id}") from exc
-
     @staticmethod
-    def _require_assignment(node: Node, assignment_id: str, expected: NodeStatus) -> None:
-        if node.status is not expected or node.assignment_id != assignment_id:
-            raise GraphError(f"invalid assignment transition for {node.node_id}")
+    def _node_task_ids(record: _GlobalGraphRecord, node_id: str) -> tuple[str, ...]:
+        if node_id in record.work:
+            return record.work[node_id].task_memberships
+        return record.artifacts[node_id].task_memberships
 
     def _notify(self, event: GraphEvent) -> None:
-        for callback in tuple(self._subscribers):
-            callback(event)
+        for subscriber in tuple(self._subscribers):
+            subscriber(event)
+
+    @staticmethod
+    def _snapshot(record: _GlobalGraphRecord, *, include_payloads: bool) -> GlobalGraphSnapshot:
+        artifacts = tuple(
+            copy.deepcopy(node) if include_payloads else replace(copy.deepcopy(node), payload=None, evidence_refs=())
+            for node in sorted(record.artifacts.values(), key=lambda item: item.created_order)
+        )
+        return GlobalGraphSnapshot(
+            record.version,
+            tuple(copy.deepcopy(node) for node in sorted(record.work.values(), key=lambda item: item.created_order)),
+            artifacts,
+            tuple(copy.deepcopy(record.edges)),
+            tuple(copy.deepcopy(task) for task in sorted(record.tasks.values(), key=lambda item: item.submitted_at)),
+        )
+
+    @staticmethod
+    def _artifact_dict(artifact: ArtifactNode) -> dict[str, object]:
+        value = asdict(artifact)
+        value["key"] = artifact.key.to_dict() if artifact.key is not None else None
+        return value
+
+    @staticmethod
+    def _record_from_checkpoint(checkpoint: dict[str, object]) -> _GlobalGraphRecord:
+        work = {
+            str(item["node_id"]): WorkNode(
+                node_id=str(item["node_id"]),
+                agent_id=str(item["agent_id"]),
+                goal=str(item["goal"]),
+                control_predecessors=tuple(item.get("control_predecessors", ())),
+                input_artifacts=tuple(ArtifactRequirement(str(req["artifact_node_id"]), req.get("max_age_seconds")) for req in item.get("input_artifacts", ())),
+                output_artifact_ids=tuple(item.get("output_artifact_ids", ())),
+                required_resources=tuple(item.get("required_resources", ())),
+                task_memberships=tuple(item.get("task_memberships", ())),
+                metadata=copy.deepcopy(item.get("metadata", {})),
+                status=WorkStatus(str(item["status"])),
+                assignment_id=item.get("assignment_id"),
+                outcome=item.get("outcome"),
+                completion_report=tuple(copy.deepcopy(item.get("completion_report", ()))),
+                created_order=int(item.get("created_order", 0)),
+            )
+            for item in checkpoint.get("work", [])
+        }
+        artifacts = {
+            str(item["node_id"]): ArtifactNode(
+                node_id=str(item["node_id"]),
+                kind=str(item["kind"]),
+                state=ArtifactState(str(item["state"])),
+                producer_work_id=str(item["producer_work_id"]),
+                consumer_work_ids=tuple(item.get("consumer_work_ids", ())),
+                key=ArtifactKey.from_dict(item["key"]) if item.get("key") else None,
+                reuse_policy=ReusePolicy(str(item["reuse_policy"])),
+                generation=int(item.get("generation", 1)),
+                payload=copy.deepcopy(item.get("payload")),
+                evidence_refs=tuple(item.get("evidence_refs", ())),
+                task_memberships=tuple(item.get("task_memberships", ())),
+                observed_at=item.get("observed_at"),
+                valid_from=item.get("valid_from"),
+                valid_until=item.get("valid_until"),
+                source_revision=str(item.get("source_revision", "")),
+                failure_reason=item.get("failure_reason"),
+                created_order=int(item.get("created_order", 0)),
+            )
+            for item in checkpoint.get("artifacts", [])
+        }
+        edges = [DependencyEdge(str(item["from_node_id"]), str(item["to_node_id"]), EdgeKind(str(item["kind"]))) for item in checkpoint.get("edges", [])]
+        tasks = {
+            str(item["task_id"]): TaskRecord(
+                task_id=str(item["task_id"]),
+                user_goal=str(item["user_goal"]),
+                entry_work_ids=tuple(item.get("entry_work_ids", ())),
+                terminal_work_ids=tuple(item.get("terminal_work_ids", ())),
+                referenced_work_ids=tuple(item.get("referenced_work_ids", ())),
+                referenced_artifact_ids=tuple(item.get("referenced_artifact_ids", ())),
+                local_node_map=tuple(tuple(pair) for pair in item.get("local_node_map", ())),
+                submitted_at=float(item["submitted_at"]),
+                status=TaskStatus(str(item["status"])),
+                outcome=item.get("outcome"),
+            )
+            for item in checkpoint.get("tasks", [])
+        }
+        events = [
+            GraphEvent(int(item["version"]), str(item["kind"]), tuple(item.get("task_ids", ())), tuple(item.get("node_ids", ())), copy.deepcopy(item.get("detail", {})))
+            for item in checkpoint.get("events", [])
+        ]
+        return _GlobalGraphRecord(
+            version=int(checkpoint.get("version", 0)),
+            work=work,
+            artifacts=artifacts,
+            edges=edges,
+            tasks=tasks,
+            events=events,
+            next_work=int(checkpoint.get("next_work", len(work) + 1)),
+            next_artifact=int(checkpoint.get("next_artifact", len(artifacts) + 1)),
+            next_created_order=int(checkpoint.get("next_created_order", len(work) + len(artifacts) + 1)),
+        )

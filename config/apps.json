@@ -12,7 +12,6 @@
     ],
     "long_term_memory": [
       "For creating an event, open the event insert screen, ensure required information is present, then save only after the relevant fields are filled.",
-      "If an event requires information that is not available in Calendar, request it from an appropriate app-oriented agent before saving.",
       "When runtime information is received, decide how it should be used in Calendar and manipulate the visible UI with primitive actions.",
       "Location fields should contain places or addresses. Agenda, notes, and other meeting details should be preserved in a description, notes, or details field when such a field is available.",
       "If a needed event field is not visible in the current viewport, scroll through the event form before reopening fields that are already filled."
@@ -218,7 +217,6 @@
     "description": "Shopping app for inspecting orders, continuing checkout, and completing orders after payment authorization.",
     "long_term_memory": [
       "Inspect the visible order state before choosing the next action.",
-      "When an order requires external authorization, request the operation from a payment-capable peer agent.",
       "After an operation result arrives, recheck the order status and continue the order flow from visible evidence."
     ],
     "launch": {
@@ -265,9 +263,7 @@
     ],
     "description": "Service operations app for reviewing and submitting case records.",
     "long_term_memory": [
-      "Inspect visible form state before deciding whether information is missing.",
-      "When a required value is unavailable in the current app, consult the registry and request it from an appropriate peer agent.",
-      "When a required value arrives, enter it into the matching visible field and continue from visible evidence."
+      "Inspect visible form labels, values, and status before taking an action."
     ],
     "launch": {
       "mode": "launcher"
@@ -283,9 +279,7 @@
     ],
     "description": "Procurement workflow app for completing purchasing requests with visible project and approval-code fields.",
     "long_term_memory": [
-      "Inspect visible procurement fields before deciding whether information is missing.",
-      "When required purchasing or project-code information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
-      "When missing information arrives, enter it into the matching visible field and complete the procurement request from visible evidence."
+      "Inspect visible procurement fields, values, and status before taking an action."
     ],
     "launch": {
       "mode": "launcher"
@@ -301,9 +295,7 @@
     ],
     "description": "Shipping workflow app for completing dispatch requests with visible shipment, project, and routing-code fields.",
     "long_term_memory": [
-      "Inspect visible shipping fields before deciding whether information is missing.",
-      "When required shipment or project-code information is unavailable in the current app, consult the registry and request it from an appropriate information-provider peer agent.",
-      "When missing information arrives, enter it into the matching visible field and complete the shipping request from visible evidence."
+      "Inspect visible shipping fields, values, and status before taking an action."
     ],
     "launch": {
       "mode": "launcher"
